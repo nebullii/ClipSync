@@ -32,6 +32,12 @@ cd ClipSync
 open build/DerivedData/Build/Products/Debug/ClipSync.app
 ```
 
+To install it into your Applications folder instead (release build):
+
+```sh
+./scripts/build.sh install-mac
+```
+
 Or open `ClipSync.xcodeproj` in Xcode, pick the **ClipSyncMac** scheme and press Run.
 
 On first launch the app asks for **Accessibility** permission (System Settings > Privacy & Security > Accessibility). It needs this to paste into other apps for you. Without it, ClipSync still copies the item to your clipboard and you press Command + V yourself.

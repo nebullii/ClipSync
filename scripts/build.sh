@@ -253,6 +253,46 @@ do_run_mac() {
     return 1
 }
 
+do_install_mac() {
+    # Release build (no test hooks), copied into the Applications folder and opened.
+    xcodegen generate --spec "$ROOT/project.yml" --project "$ROOT" || return 1
+    xcodebuild \
+        -project "$PROJECT" \
+        -scheme ClipSyncMac \
+        -configuration Release \
+        -destination "platform=macOS" \
+        -derivedDataPath "$DERIVED" \
+        -skipPackagePluginValidation \
+        -skipMacroValidation \
+        build
+    local release_code=$?
+    local built="$DERIVED/Build/Products/Release/ClipSync.app"
+    if [ "$release_code" -ne 0 ] || [ ! -d "$built" ]; then
+        echo "warning: Release build failed (exit $release_code); installing the tested Debug build instead"
+        build_mac_unsigned_debug || return 1
+        built="$MAC_APP"
+        if [ ! -d "$built" ]; then
+            echo "error: no built app found at $built" >&2
+            return 1
+        fi
+    fi
+    local dest_dir="/Applications"
+    if [ ! -w "$dest_dir" ]; then
+        dest_dir="$HOME/Applications"
+        mkdir -p "$dest_dir" || return 1
+    fi
+    local dest="$dest_dir/ClipSync.app"
+    osascript -e 'tell application id "com.thingbits.clipsync.mac" to quit' >/dev/null 2>&1 || true
+    sleep 1
+    if [ -d "$dest" ]; then
+        rm -rf "$dest" || return 1
+    fi
+    ditto "$built" "$dest" || return 1
+    echo "==> installed $dest"
+    open "$dest" || return 1
+    echo "==> ClipSync opened. Look for its icon in the menu bar."
+}
+
 do_stop_mac() {
     if pgrep -f "$MAC_BINARY" >/dev/null 2>&1; then
         echo "==> stopping $MAC_APP"
@@ -341,6 +381,11 @@ if [ $# -lt 1 ]; then
 fi
 
 COMMAND="$1"
+# One-shot install request: a flag file turns the next "mac" request into install-mac.
+if [ "$COMMAND" = "mac" ] && [ -f "$BUILD_DIR/requests/install-mac.flag" ]; then
+    rm -f "$BUILD_DIR/requests/install-mac.flag"
+    COMMAND="install-mac"
+fi
 case "$COMMAND" in
     bootstrap)      run_logged bootstrap do_bootstrap ;;
     core-test)      run_logged core-test do_core_test ;;
@@ -372,6 +417,7 @@ case "$COMMAND" in
         ;;
     run-mac)        run_logged run-mac do_run_mac ;;
     stop-mac)       run_logged stop-mac do_stop_mac ;;
+    install-mac)    run_logged install-mac do_install_mac ;;
     ios-sim-run)    run_logged ios-sim-run do_ios_sim_run ;;
     screenshot-sim) run_logged screenshot-sim do_screenshot_sim ;;
     -h|--help|help) usage; exit 0 ;;
