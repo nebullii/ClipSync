@@ -45,14 +45,20 @@ protocol PasteActing: AnyObject {
 final class AppEnvironment: ObservableObject {
     let store: ClipStore
     let settings: AppSettings
+    /// App Lock state (security pass). While `appLock.isLocked` the panel shows only its
+    /// lock screen and every content path (paste, copy, Quick Look, drag, menu-bar recent
+    /// items, intents) is refused.
+    let appLock: AppLockController
     /// Replaced by the services engineer's paste service at launch.
     var paster: PasteActing
     /// Replaced with PanelFactory.makePanel(environment:) at launch.
     var panel: PanelPresenting
 
-    init(store: ClipStore, settings: AppSettings, paster: PasteActing? = nil, panel: PanelPresenting? = nil) {
+    init(store: ClipStore, settings: AppSettings, paster: PasteActing? = nil, panel: PanelPresenting? = nil,
+         appLock: AppLockController? = nil) {
         self.store = store
         self.settings = settings
+        self.appLock = appLock ?? AppLockController.shared
         self.paster = paster ?? NoopPaster()
         self.panel = panel ?? NoopPanelPresenter()
     }
@@ -77,7 +83,7 @@ extension Notification.Name {
     /// side (AppController), which opens the Settings window.
     ///
     /// Optional deep link: `userInfo[ClipSyncNotificationKey.settingsTab]` (= "tab") is a
-    /// String naming the tab to select: "general", "history", "privacy", "sync" or "about"
+    /// String naming the tab to select: "general", "history", "privacy", "security", "sync" or "about"
     /// (case-insensitive). Missing / unknown → the window opens on its current tab.
     ///
     ///     NotificationCenter.default.post(name: .clipSyncOpenSettings, object: nil,

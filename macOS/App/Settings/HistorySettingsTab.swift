@@ -64,6 +64,10 @@ struct HistorySettingsTab: View {
                     .accessibilityLabel("Clear history")
                     .accessibilityHint("Asks for confirmation. Pinned items are kept.")
                 }
+
+                Toggle("Clear history when I quit ClipSync", isOn: $settings.clearHistoryOnQuit)
+                    .accessibilityLabel("Clear history when I quit ClipSync")
+                SettingsFootnote("When you quit ClipSync, unpinned items are deleted (with their images and files). Pinned items and items in pinboards are kept. With iCloud sync on, they are also removed from your other devices. Not done if ClipSync is force-quit or crashes.")
             }
         }
         .formStyle(.grouped)

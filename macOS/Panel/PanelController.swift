@@ -19,6 +19,12 @@
 //   Return, Esc, Space, Delete, ⌘1–9, ⌘C, ⌘P, …) and lets everything else through.
 //   Printable keys first make sure the AppKit search field is first responder (caret at
 //   the end), then pass through — that is type-to-search from anywhere in the panel.
+//
+// App Lock (security pass)
+//   While env.appLock.isLocked the panel shows only PanelLockView, the view model holds no
+//   rows, and the key monitor swallows every key except Esc / ⌘W (hide) and Return / Space
+//   (unlock). Quick Look is closed and its temp files removed on lock. The panel still
+//   opens from the hotkey, and prompts for Touch ID / password once per show.
 
 import AppKit
 import SwiftUI
@@ -152,6 +158,10 @@ final class PanelController: NSObject, PanelPresenting, NSWindowDelegate {
         }
         PanelQuickLook.removeTemporaryFiles()
         installContent()
+
+        environment.appLock.addLockStateObserver { [weak self] locked in
+            self?.lockStateChanged(locked)
+        }
     }
 
     private func installContent() {
@@ -162,7 +172,11 @@ final class PanelController: NSObject, PanelPresenting, NSWindowDelegate {
         effect.maskImage = PanelChrome.roundedMaskImage(cornerRadius: PanelController.cornerRadius)
         effect.autoresizingMask = [.width, .height]
 
-        let root = PanelRootView(viewModel: viewModel)
+        let root = PanelRootView(
+            viewModel: viewModel,
+            appLock: environment.appLock,
+            onUnlock: { [weak self] in self?.unlockFromPanel() }
+        )
             .environmentObject(environment)
             .environmentObject(environment.store)
             .environmentObject(environment.settings)
@@ -190,9 +204,12 @@ final class PanelController: NSObject, PanelPresenting, NSWindowDelegate {
     }
 
     func show() {
+        let locked = environment.appLock.checkTimeout()
         if isVisible {
             panel.makeKey()
-            viewModel.focusBridge.focusSearchField()
+            if !locked {
+                viewModel.focusBridge.focusSearchField()
+            }
             return
         }
         let showStarted = CACurrentMediaTime()
@@ -212,7 +229,14 @@ final class PanelController: NSObject, PanelPresenting, NSWindowDelegate {
         isVisible = true
         installMonitors()
 
-        if !viewModel.focusBridge.focusSearchField() {
+        if locked {
+            if environment.appLock.autoPromptOnShow {
+                // Once per show; the user can press Return / the button to try again.
+                Task { @MainActor [weak self] in
+                    self?.unlockFromPanel()
+                }
+            }
+        } else if !viewModel.focusBridge.focusSearchField() {
             // First show: the hosted NSSearchField may only exist after the first layout pass.
             Task { @MainActor [weak self] in
                 self?.viewModel.focusBridge.focusSearchField()
@@ -236,6 +260,47 @@ final class PanelController: NSObject, PanelPresenting, NSWindowDelegate {
         viewModel.panelDidHide()
         panel.orderOut(nil)
         panel.alphaValue = 1
+        // "Immediately" locks now; other timeouts start counting from here.
+        environment.appLock.noteInterfaceHidden()
+    }
+
+    // MARK: App Lock
+
+    private func lockStateChanged(_ locked: Bool) {
+        if locked {
+            closeQuickLook()
+            PanelQuickLook.removeTemporaryFiles()
+            viewModel.lockContent()
+        } else if isVisible {
+            viewModel.prepareForShow()
+            panel.makeKey()
+            if !viewModel.focusBridge.focusSearchField() {
+                Task { @MainActor [weak self] in
+                    self?.viewModel.focusBridge.focusSearchField()
+                }
+            }
+        }
+    }
+
+    /// Lock screen button / Return / Space / auto-prompt on show.
+    private func unlockFromPanel() {
+        let lock = environment.appLock
+        guard lock.isLocked, !lock.isAuthenticating else { return }
+        // The strip sits at status-bar level; drop it while the system prompt is up so the
+        // Touch ID / password dialog can never end up behind it.
+        let normalLevel = panel.level
+        panel.level = .floating
+        Task { @MainActor [weak self] in
+            let unlocked = await lock.unlock(reason: "show your clipboard history")
+            guard let self = self else { return }
+            self.panel.level = normalLevel
+            guard self.isVisible else { return }
+            // The system prompt took key status; give it back to the strip.
+            self.panel.makeKey()
+            if unlocked {
+                self.viewModel.focusBridge.focusSearchField()
+            }
+        }
     }
 
     // MARK: Geometry
@@ -273,8 +338,10 @@ final class PanelController: NSObject, PanelPresenting, NSWindowDelegate {
         globalMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
         ) { [weak self] _ in
-            // A click in another app (or on the desktop).
-            self?.hide()
+            // A click in another app (or on the desktop). Not while the system
+            // authentication prompt (another process) is up: clicks there are expected.
+            guard let self = self, !self.environment.appLock.isAuthenticating else { return }
+            self.hide()
         }
     }
 
@@ -313,6 +380,10 @@ final class PanelController: NSObject, PanelPresenting, NSWindowDelegate {
         guard isOurWindow else { return event }
 
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if environment.appLock.isLocked {
+            return handleLockedKeyDown(event, flags: flags)
+        }
+        environment.appLock.noteActivity()
         let command = flags.contains(.command)
         let shift = flags.contains(.shift)
         let option = flags.contains(.option)
@@ -416,6 +487,23 @@ final class PanelController: NSObject, PanelPresenting, NSWindowDelegate {
         return event
     }
 
+    /// While locked nothing reaches the (hidden) content: no search typing, no ⌘1–9,
+    /// no paste/copy/Quick Look. Esc / ⌘W hide, Return / Space unlock; all else is swallowed.
+    private func handleLockedKeyDown(_ event: NSEvent, flags: NSEvent.ModifierFlags) -> NSEvent? {
+        switch event.keyCode {
+        case KeyCode.escape:
+            hide()
+        case KeyCode.returnKey, KeyCode.keypadEnter, KeyCode.space:
+            unlockFromPanel()
+        default:
+            let characters = event.charactersIgnoringModifiers?.lowercased() ?? ""
+            if flags.contains(.command) && characters == "w" {
+                hide()
+            }
+        }
+        return nil
+    }
+
     private static func isTypingEvent(_ event: NSEvent) -> Bool {
         if event.specialKey != nil { return false }
         guard let characters = event.characters, let scalar = characters.unicodeScalars.first else { return false }
@@ -428,6 +516,8 @@ final class PanelController: NSObject, PanelPresenting, NSWindowDelegate {
         guard isVisible else { return }
         // Clicking into the Quick Look panel makes it key; keep the strip open then.
         if PanelQuickLook.isPanelVisible { return }
+        // The Touch ID / password prompt takes key status; keep the lock screen up.
+        if environment.appLock.isAuthenticating { return }
         hide()
     }
 
@@ -438,6 +528,7 @@ final class PanelController: NSObject, PanelPresenting, NSWindowDelegate {
             closeQuickLook()
             return
         }
+        guard !environment.appLock.isLocked else { return }
         guard let item = viewModel.selectedItem, PanelViewModel.isAlive(item) else {
             NSSound.beep()
             return
@@ -448,6 +539,8 @@ final class PanelController: NSObject, PanelPresenting, NSWindowDelegate {
             return
         }
         quickLookSource.urls = urls
+        // Same screen-capture setting as the strip (AppController.applyWindowPrivacy).
+        preview.sharingType = panel.sharingType
         preview.level = NSWindow.Level(rawValue: panel.level.rawValue + 1)
         preview.updateController()
         if preview.dataSource == nil {

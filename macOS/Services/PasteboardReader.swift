@@ -134,11 +134,26 @@ enum PasteboardReader {
         let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
         let objects = pasteboard.readObjects(forClasses: [NSURL.self], options: options) ?? []
         var urls: [URL] = []
-        urls.reserveCapacity(min(objects.count, limits.maxFileURLs))
+        var seenPaths = Set<String>()
+        urls.reserveCapacity(min(max(objects.count, 1), limits.maxFileURLs))
         for object in objects {
+            guard urls.count < limits.maxFileURLs else { break }
             guard let url = object as? URL, url.isFileURL else { continue }
-            urls.append(url)
-            if urls.count >= limits.maxFileURLs { break }
+            let pathURL = (url as NSURL).filePathURL ?? url
+            if seenPaths.insert(pathURL.standardizedFileURL.path).inserted {
+                urls.append(pathURL)
+            }
+        }
+        // A multi-file copy (Finder) is one pasteboard item per file, each with its own
+        // public.file-url. Read every item explicitly as well, so no file is lost when
+        // readObjects returns fewer objects than there are items.
+        for item in pasteboard.pasteboardItems ?? [] {
+            guard urls.count < limits.maxFileURLs else { break }
+            guard let raw = item.string(forType: .fileURL), let url = URL(string: raw), url.isFileURL else { continue }
+            let pathURL = (url as NSURL).filePathURL ?? url
+            if seenPaths.insert(pathURL.standardizedFileURL.path).inserted {
+                urls.append(pathURL)
+            }
         }
         guard let first = urls.first else { return .skipped("no file URLs") }
 

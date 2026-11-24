@@ -5,8 +5,9 @@ import os   // Logger interpolation (privacy:) used via ServicesLog
 /// Test hook: writes a one-line JSON status to
 /// `~/Library/Application Support/ClipSync/status.json`.
 ///
-/// Only active when the app was launched with `CLIPSYNC_STATUS_FILE=1`; otherwise
-/// every call is a no-op (the file holds a snippet of clipboard text).
+/// Only active in DEBUG builds launched with `CLIPSYNC_UITEST=1 CLIPSYNC_STATUS_FILE=1`
+/// (see LaunchOptions); otherwise every call is a no-op (the file can hold a snippet of
+/// clipboard text — redacted while App Lock has ClipSync locked).
 @MainActor
 final class StatusFileWriter {
     struct Status: Codable, Equatable {
@@ -33,10 +34,18 @@ final class StatusFileWriter {
         }
     }
 
-    func write(store: ClipStore, settings: AppSettings, accessibilityGranted: Bool, lastCapture: ClipboardMonitor.Capture?) {
+    func write(
+        store: ClipStore,
+        settings: AppSettings,
+        accessibilityGranted: Bool,
+        lastCapture: ClipboardMonitor.Capture?,
+        redactContent: Bool = false
+    ) {
         guard isEnabled, let fileURL = fileURL else { return }
         let prefix: String?
-        if let text = lastCapture?.plainText {
+        if redactContent {
+            prefix = lastCapture?.plainText == nil ? nil : "<redacted>"
+        } else if let text = lastCapture?.plainText {
             prefix = String(text.prefix(40))
         } else {
             prefix = nil

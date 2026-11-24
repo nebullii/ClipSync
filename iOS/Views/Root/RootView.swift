@@ -1,10 +1,12 @@
 import SwiftUI
+import UIKit
 import ClipCore
 
 /// Chooses the iPhone (tabs) or iPad (split view) layout and owns app-wide presentation:
 /// toasts, onboarding, the pinboard editor, and scene-activation refreshes.
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var appLock: AppLockController
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.scenePhase) private var scenePhase
 
@@ -14,6 +16,16 @@ struct RootView: View {
                 PadRootView()
             } else {
                 PhoneRootView()
+            }
+        }
+        // App Lock: the real lock screen is SecurityCoordinator's window above everything;
+        // this in-window blanket also covers the very first frame. Never present while the
+        // lock is off (UI tests see the unchanged hierarchy).
+        .overlay {
+            if appLock.isLocked {
+                Color(uiColor: .systemBackground)
+                    .ignoresSafeArea()
+                    .accessibilityHidden(true)
             }
         }
         .tint(Theme.accent)
@@ -32,8 +44,12 @@ struct RootView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
+                model.security.sceneBecameActive()
                 model.sceneBecameActive()
             }
+        }
+        .onAppear {
+            model.security.sceneBecameActive()
         }
         .onReceive(model.store.$revision) { _ in
             model.boards.refresh(from: model.store)

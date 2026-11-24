@@ -26,13 +26,20 @@ final class AppController: NSObject, ObservableObject {
     let hotkey: HotkeyController
     let maintenance: MaintenanceScheduler
     let statusWriter: StatusFileWriter
+    /// App Lock (same instance as `environment.appLock`).
+    let appLock: AppLockController
     private(set) lazy var windows = WindowCoordinator(controller: self)
 
     private var cancellables = Set<AnyCancellable>()
     private var isStarted = false
     private var didOfferAccessibilityHelp = false
+    /// Re-checks the App Lock timeout while the lock is on (nil while it is off).
+    private var lockTimer: Timer?
+    #if DEBUG
     /// E2E test hook; nil unless CLIPSYNC_UITEST=1 + CLIPSYNC_E2E_DIR (see LaunchOptions).
+    /// Not compiled into Release / Signed builds.
     private var e2eDriver: E2EDriver?
+    #endif
 
     var store: ClipStore { return environment.store }
     var settings: AppSettings { return environment.settings }
@@ -61,7 +68,10 @@ final class AppController: NSObject, ObservableObject {
         self.hotkey = HotkeyController()
         self.maintenance = MaintenanceScheduler(store: env.store)
         self.statusWriter = StatusFileWriter(isEnabled: options.writesStatusFile)
+        self.appLock = env.appLock
         super.init()
+        // UI-test mode never opens the system authentication prompt by itself.
+        appLock.autoPromptOnShow = !options.isUITest
     }
 
     // MARK: - Launch
@@ -93,6 +103,12 @@ final class AppController: NSObject, ObservableObject {
         monitor.start()
         launchAtLogin.start()
         observeSettings()
+        observeSystemLockEvents()
+        appLock.addLockStateObserver { [weak self] _ in
+            self?.writeStatus()
+        }
+        updateLockTimer()
+        applyWindowPrivacy()
 
         NotificationCenter.default.addObserver(
             self,
@@ -111,7 +127,9 @@ final class AppController: NSObject, ObservableObject {
             }
         }
         writeStatus()
+        #if DEBUG
         e2eDriver = E2EDriver.startIfEnabled(controller: self)   // E2E test hook (no-op normally)
+        #endif
         ServicesLog.app.info("ClipSync started (uiTest: \(self.options.isUITest, privacy: .public))")
     }
 
@@ -143,6 +161,111 @@ final class AppController: NSObject, ObservableObject {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.writeStatus() }
             .store(in: &cancellables)
+
+        // receive(on:) delivers after the new value is stored (@Published emits in willSet).
+        settings.$appLockEnabled
+            .dropFirst()
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.updateLockTimer()
+                self?.writeStatus()
+            }
+            .store(in: &cancellables)
+
+        settings.$hideFromScreenCapture
+            .dropFirst()
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.applyWindowPrivacy() }
+            .store(in: &cancellables)
+    }
+
+    // MARK: - App Lock & window privacy
+
+    /// Lock on screen lock, sleep, display sleep and fast user switching.
+    private func observeSystemLockEvents() {
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        let workspaceNames: [Notification.Name] = [
+            NSWorkspace.willSleepNotification,
+            NSWorkspace.screensDidSleepNotification,
+            NSWorkspace.sessionDidResignActiveNotification
+        ]
+        for name in workspaceNames {
+            workspaceCenter.addObserver(self, selector: #selector(systemLockEvent(_:)), name: name, object: nil)
+        }
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(systemLockEvent(_:)),
+            name: Notification.Name("com.apple.screenIsLocked"),
+            object: nil
+        )
+    }
+
+    @objc private func systemLockEvent(_ notification: Notification) {
+        if Thread.isMainThread {
+            lockNow()
+        } else {
+            Task { @MainActor in
+                self.lockNow()
+            }
+        }
+    }
+
+    /// A 15 s repeating check while the lock is on (none while it is off, so idle CPU is unchanged).
+    private func updateLockTimer() {
+        if appLock.isEnabled {
+            guard lockTimer == nil else { return }
+            let timer = Timer(
+                timeInterval: 15,
+                target: self,
+                selector: #selector(lockTimerFired(_:)),
+                userInfo: nil,
+                repeats: true
+            )
+            timer.tolerance = 5
+            RunLoop.main.add(timer, forMode: .common)
+            lockTimer = timer
+        } else {
+            lockTimer?.invalidate()
+            lockTimer = nil
+        }
+    }
+
+    @objc private func lockTimerFired(_ timer: Timer) {
+        appLock.checkTimeout()
+    }
+
+    /// Menu bar "Lock ClipSync Now", screen lock, sleep. No-op while App Lock is off.
+    func lockNow() {
+        appLock.lockNow()
+    }
+
+    /// True when ClipSync windows ask macOS to be left out of screen capture. Always false
+    /// in UI-test mode: the E2E harness renders windows in-process.
+    var hidesWindowsFromCapture: Bool {
+        return settings.hideFromScreenCapture && !options.isUITest
+    }
+
+    /// Applies `hidesWindowsFromCapture` to every ClipSync window (panel included).
+    func applyWindowPrivacy() {
+        for window in NSApp.windows {
+            applyWindowPrivacy(to: window)
+        }
+    }
+
+    func applyWindowPrivacy(to window: NSWindow) {
+        let wanted: NSWindow.SharingType = hidesWindowsFromCapture ? .none : .readOnly
+        if window.sharingType != wanted {
+            window.sharingType = wanted
+        }
+    }
+
+    /// Called from applicationWillTerminate: "Clear history when I quit ClipSync".
+    func prepareForTermination() {
+        guard settings.clearHistoryOnQuit, !store.isInMemory else { return }
+        let removed = store.clearHistory(keepPinned: true)
+        ServicesLog.app.info("Cleared \(removed) items on quit")
     }
 
     /// `.clipSyncOpenSettings`; optional `userInfo["tab"]` (String) = a `SettingsTab`
@@ -161,13 +284,17 @@ final class AppController: NSObject, ObservableObject {
     }
 
     private func writeStatus() {
+        #if DEBUG
+        // Test hook (CLIPSYNC_UITEST=1 + CLIPSYNC_STATUS_FILE=1, Debug builds only).
         guard statusWriter.isEnabled else { return }
         statusWriter.write(
             store: store,
             settings: settings,
             accessibilityGranted: accessibility.isGranted,
-            lastCapture: monitor.lastCapture
+            lastCapture: monitor.lastCapture,
+            redactContent: appLock.isLocked
         )
+        #endif
     }
 
     // MARK: - Actions (menu bar, settings, onboarding)
@@ -181,7 +308,13 @@ final class AppController: NSObject, ObservableObject {
     }
 
     /// Menu bar "recent items": copy only (the menu has no previous app to paste into reliably).
+    /// Refused while locked: the panel's lock screen opens instead.
     func quickCopy(_ item: ClipItem) {
+        if appLock.checkTimeout() {
+            environment.panel.show()
+            return
+        }
+        appLock.noteActivity()
         environment.paster.copyToPasteboard(item, asPlainText: settings.plainTextByDefault)
     }
 

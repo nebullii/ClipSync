@@ -200,7 +200,8 @@ public enum ContentHasher {
 
 public struct IgnoreRules: Codable, Sendable, Equatable {
     public static let defaultBundleIDs: [String]   // 1Password (incl. "com.1password.*", "com.agilebits.*"),
-                                                   // Bitwarden, Keychain Access, Passwords, KeePassXC
+                                                   // Bitwarden, Keychain Access, Passwords, KeePassXC,
+                                                   // LastPass, Dashlane, Proton Pass, Enpass, Strongbox (security pass)
     public var userBundleIDs: [String]
     public var includeDefaults: Bool
     public init(userBundleIDs: [String] = [], includeDefaults: Bool = true)
@@ -711,3 +712,54 @@ Rules: services never import Panel types; panel never touches NSPasteboard writi
   row and small inline payloads do). To sync images up to 20 MB, raise
   `store.storagePolicy.inlineThresholdBytes` to `StoragePolicy.defaultSyncSizeCapBytes`
   (`.externalStorage` lets CloudKit carry them as assets).
+
+---
+
+## 10. Security & privacy (security pass — additive; see docs/SECURITY.md)
+
+```swift
+// Settings (AppSettings, all persisted, all in allKeys)
+@Published public internal(set) var appLockEnabled: Bool   // default false; change ONLY via AppLockController.setEnabled
+@Published public var lockTimeout: LockTimeout             // default .after5Minutes (AppSettings.defaultLockTimeout)
+@Published public var linkPreviewsEnabled: Bool            // default false — gates ClipStore.enrich link fetching
+@Published public var hideFromScreenCapture: Bool          // default true (Mac NSWindow.sharingType = .none; off in UI-test mode)
+@Published public var privacyCoverEnabled: Bool            // default true (iOS app-switcher cover; off in -uitest-seed)
+@Published public var clearHistoryOnQuit: Bool             // default false (Mac)
+// resetToDefaults() leaves appLockEnabled / lockTimeout alone.
+
+public enum LockTimeout: String, CaseIterable, Codable, Sendable, Identifiable {
+    case immediately, after1Minute, after5Minutes, after15Minutes, after1Hour
+    var displayName: String; var interval: TimeInterval?    // nil = lock when hidden
+}
+public enum BiometryKind { case none, touchID, faceID, opticID; var displayName: String?; var systemImageName: String }
+
+@MainActor public final class AppLockController: ObservableObject {
+    static var shared: AppLockController                    // AppSettings.shared + LocalAuthentication; read after AppSettings.setShared
+    static func setShared(_:)
+    static func makeSystemAuthenticator() -> AppLockAuthenticating
+    init(settings: AppSettings, authenticator: AppLockAuthenticating, clock: AppLockClock? = nil)
+    @Published private(set) var isLocked: Bool              // starts = settings.appLockEnabled
+    @Published private(set) var isAuthenticating, canAuthenticate: Bool; biometryKind: BiometryKind; lastMessage: String?
+    var autoPromptOnShow: Bool                               // apps set false in UI-test mode
+    var isEnabled: Bool; var timeout: LockTimeout; var unlockButtonTitle: String
+    func unlock(reason:) async -> Bool                       // .deviceOwnerAuthentication (biometrics + password/passcode)
+    func lockNow(); func noteActivity(); func noteInterfaceHidden(); @discardableResult func checkTimeout() -> Bool
+    func setEnabled(_:reason:) async -> AppLockChangeResult  // both directions authenticate; on refused without passcode
+    func addLockStateObserver(_: @escaping @MainActor (Bool) -> Void)   // called synchronously after each change
+    #if DEBUG  func enableForTesting(); func unlockAndDisableForTesting()  #endif
+}
+@MainActor public protocol AppLockAuthenticating: AnyObject { availability(); authenticate(reason:) async -> AppLockAuthResult }
+public protocol AppLockClock: AnyObject { func now() -> TimeInterval }   // ContinuousAppLockClock (counts during sleep)
+
+ClipIntentError.locked                                       // "ClipSync is locked. Unlock it in the app, then try again."
+ClipIntentRunner.requireUnlocked() throws                    // every READING intent / entity query calls it; save intents don't
+ClipStore.linkFetchAttempts: Int                             // calls to media.linkMetadata (0 while previews are off)
+ClipStore.clearHistory(...)                                  // now also runs removeUnreferencedBlobs()
+public enum StoreFileProtection                              // 0700 dirs / 0600 files; iOS completeUntilFirstUserAuthentication
+                                                             // protectTree(at:), protectFile(_:), writeOptions, permissions(of:)
+// StoreLocation.resolve() and ClipStore.makeShared() call protectTree; BlobStore.write protects each file.
+```
+
+Mac seam: `AppEnvironment.appLock` (default `AppLockController.shared`). While `appLock.isLocked` the panel
+shows only `PanelLockView`, `PanelViewModel` holds no rows, and `PasteService` writes nothing.
+`SettingsTab.security` ("security") is a new deep-link value for `.clipSyncOpenSettings`.

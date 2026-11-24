@@ -52,6 +52,9 @@ AFTER_C="ClipSync e2e after concealed ${RUN_ID}"
 AFTER_T="ClipSync e2e after transient ${RUN_ID}"
 PAUSED_TEXT="ClipSync e2e paused ${RUN_ID}"
 SEED_TAG="sd${RUN_ID}"
+LOCKED_TEXT="ClipSync e2e locked ${RUN_ID}"
+LINK_NOFETCH="https://example.com/clipsync-e2e-nofetch/${RUN_ID}"
+REDACTED="<redacted>"
 TARGET_DOC="$E2E/paste-target.txt"
 TARGET_NAME="paste-target.txt"
 
@@ -173,14 +176,14 @@ state() {
         echo "status.kv missing"
         return
     fi
-    printf 'status{seq=%s itemCount=%s paused=%s ax=%s panelVisible=%s visibleCards=%s selected=%s search="%s" filter=%s scope=%s front=%s pasteTarget=%s windows=%s newest=[%s|%s|pinned=%s] 2nd=[%s|%s] 3rd=[%s|%s] lastPaste=[%s|%s|plain=%s] lastCopy=[%s]}' \
-        "$(kv seq)" "$(kv itemCount)" "$(kv capturePaused)" "$(kv accessibilityGranted)" \
+    printf 'status{seq=%s locked=%s itemCount=%s paused=%s ax=%s panelVisible=%s visibleCards=%s selected=%s search="%s" filter=%s scope=%s front=%s pasteTarget=%s windows=%s newest=[%s|%s|pinned=%s] 2nd=[%s|%s] 3rd=[%s|%s] lastPaste=[%s|%s|plain=%s] lastCopy=[%s] hiddenAfter=[%s]}' \
+        "$(kv seq)" "$(kv locked)" "$(kv itemCount)" "$(kv capturePaused)" "$(kv accessibilityGranted)" \
         "$(kv panelVisible)" "$(kv visibleCardCount)" "$(kv panelSelectedIndex)" "$(kv panelSearchText)" \
         "$(kv panelFilter)" "$(kv panelScope)" "$(kv frontmostApp)" "$(kv pasteTarget)" "$(kv openWindows)" \
         "$(kv items.0.kind)" "$(kv items.0.plainText)" "$(kv items.0.isPinned)" \
         "$(kv items.1.kind)" "$(kv items.1.plainText)" \
         "$(kv items.2.kind)" "$(kv items.2.plainText)" \
-        "$(kv lastPaste.mode)" "$(kv lastPaste.text)" "$(kv lastPaste.asPlainText)" "$(kv lastCopy.text)"
+        "$(kv lastPaste.mode)" "$(kv lastPaste.text)" "$(kv lastPaste.asPlainText)" "$(kv lastCopy.text)" "$(kv panelHiddenAfterCommand)"
 }
 
 # send_cmd "<command line>" [timeout seconds, default 10]
@@ -241,6 +244,25 @@ ensure_panel() {
     kv_eq panelVisible true
 }
 
+# restore_panel_state [setup command...]: makes sure the panel is visible. If it had to be
+# shown again (show() resets search, filter and scope), re-sends the setup commands.
+# Every scenario that needs the panel calls this instead of relying on earlier state.
+restore_panel_state() {
+    if kv_eq panelVisible true; then
+        return 0
+    fi
+    log "panel is hidden (hidden after command: '$(kv panelHiddenAfterCommand)'); showing it again"
+    ensure_panel || return 1
+    if [ $# -gt 0 ]; then
+        local c
+        for c in "$@"; do
+            send_cmd "$c" >/dev/null
+        done
+        sleep 0.3
+    fi
+    kv_eq panelVisible true
+}
+
 # ---------------------------------------------------------------------------
 # Pasteboard helper tool (compiled once with swiftc; falls back to the swift interpreter)
 # ---------------------------------------------------------------------------
@@ -268,6 +290,14 @@ func writeItems(_ items: [NSPasteboardWriting]) {
     } else {
         fail("writeObjects failed")
     }
+}
+
+/// Keeps this (short-lived) writer process alive and its run loop turning for a moment,
+/// so AppKit can hand every written item to the pasteboard server before exit.
+/// "localItems" is THIS process's view; only a separate process shows what others see.
+func settle() {
+    RunLoop.current.run(until: Date().addingTimeInterval(1.5))
+    print("localItems=\(pasteboard.pasteboardItems?.count ?? 0)")
 }
 
 switch args[1] {
@@ -315,9 +345,25 @@ case "image":
     _ = item.setData(png, forType: .png)
     writeItems([item])
 case "files":
+    // Like a Finder copy of several files: one pasteboard item per file, each carrying
+    // its own public.file-url (written eagerly, so nothing depends on this process
+    // staying alive to provide data later).
+    let paths = Array(args.dropFirst(2))
+    guard !paths.isEmpty else { fail("files needs paths") }
+    var fileItems: [NSPasteboardItem] = []
+    for path in paths {
+        let item = NSPasteboardItem()
+        _ = item.setString(URL(fileURLWithPath: path).absoluteString, forType: .fileURL)
+        fileItems.append(item)
+    }
+    writeItems(fileItems)
+    settle()
+case "files-nsurl":
+    // The AppKit convenience path: writeObjects([NSURL, NSURL]).
     let urls = args.dropFirst(2).map { NSURL(fileURLWithPath: $0) }
-    guard !urls.isEmpty else { fail("files needs paths") }
+    guard !urls.isEmpty else { fail("files-nsurl needs paths") }
     writeItems(Array(urls))
+    settle()
 case "concealed", "transient":
     guard args.count > 2 else { fail("\(args[1]) needs a string") }
     let marker = args[1] == "concealed" ? "org.nspasteboard.ConcealedType" : "org.nspasteboard.TransientType"
@@ -328,6 +374,19 @@ case "concealed", "transient":
 case "types":
     for type in pasteboard.pasteboardItems?.first?.types ?? [] {
         print(type.rawValue)
+    }
+case "items":
+    // Every pasteboard item: "item<i>: type type ..."
+    let all = pasteboard.pasteboardItems ?? []
+    for (index, item) in all.enumerated() {
+        print("item\(index): " + item.types.map { $0.rawValue }.joined(separator: " "))
+    }
+case "fileurls":
+    // One line per pasteboard item: its public.file-url (or "-").
+    let all = pasteboard.pasteboardItems ?? []
+    print("count=\(all.count)")
+    for (index, item) in all.enumerated() {
+        print("item\(index)=" + (item.string(forType: .fileURL) ?? "-"))
     }
 case "changecount":
     print(pasteboard.changeCount)
@@ -426,7 +485,7 @@ sc_capture_text() {
         local ms=$WAIT_MS kind
         kind="$(kv items.0.kind)"
         if [ "$ms" -le 2000 ] && [ "$kind" = "text" ]; then
-            pass "newest item after ${ms}ms, kind=text, itemCount $before→$(kv itemCount)"
+            pass "newest item after ${ms}ms, kind=text, itemCount ${before}→$(kv itemCount)"
         else
             fail "expected newest kind=text within 2000ms; got kind=$kind after ${ms}ms | $(state)"
         fi
@@ -510,38 +569,127 @@ sc_image() {
         return
     fi
     if wait_until 8000 kv_eq items.0.kind image; then
-        pass "kind=image after ${WAIT_MS}ms, itemCount $before→$(kv itemCount) (thumbnail: see shot-04-images)"
+        pass "kind=image after ${WAIT_MS}ms, itemCount ${before}→$(kv itemCount) (thumbnail: see shot-04-images)"
     else
         fail "expected newest kind=image within 8s after writing a 400x300 PNG (itemCount before=$before) | $(state)"
     fi
+}
+
+# fileurl_count <pbtool fileurls output>: number of items carrying a public.file-url
+fileurl_count() {
+    printf '%s\n' "$1" | tr ';' '\n' | grep -c '^item[0-9]*=file:'
+}
+
+# check_files_item <writer output>: newest item must be kind=file naming both files.
+# Where a file is lost is decided from three views of the pasteboard:
+#   writer      : pbtool's own process (localItems=, not authoritative for others)
+#   separate    : a NEW pbtool process right after the write (what other apps see)
+#   ClipSync    : the app's own NSPasteboard.general (driver command pb-items)
+check_files_item() {
+    local out="$1"
+    local separate separate_count app_view
+    separate="$(pbtool fileurls 2>&1 | tr '\n' ';')"
+    separate_count="$(fileurl_count "$separate")"
+    send_cmd "pb-items" >/dev/null
+    app_view="$CMD_RESULT"
+    local views="writer: ${out}; separate process: ${separate}; ClipSync: ${app_view}"
+    if ! wait_until 5000 kv_eq items.0.kind file; then
+        fail "expected newest kind=file within 5s ($views) | $(state)"
+        return
+    fi
+    sleep 0.3
+    local text title a b
+    text="$(kv items.0.plainText)"
+    title="$(kv items.0.title)"
+    # Compare by file name: /tmp is a symlink to /private/tmp.
+    a="$(basename "$FILE_A")"
+    b="$(basename "$FILE_B")"
+    case "$text" in
+        *"$a"*"$b"*|*"$b"*"$a"*)
+            case "$title" in
+                *"+ 1 more"*)
+                    pass "kind=file after ${WAIT_MS}ms; title='${title}'; plainText lists both files ($views)"
+                    ;;
+                *)
+                    fail "plainText lists both files but title='${title}' (expected '<first> + 1 more'); $views | $(state)"
+                    ;;
+            esac
+            ;;
+        *)
+            if [ "$separate_count" -lt 2 ]; then
+                fail "TEST WRITER, not the reader: right after pbtool wrote 2 file items, a separate process sees only ${separate_count} item(s) with public.file-url, so no reader can capture both. Captured title='${title}' plainText='${text}'; $views | $(state)"
+            else
+                fail "PRODUCT READER: other processes see 2 file items but the capture has title='${title}' plainText='${text}' (expected both $a and $b); $views | $(state)"
+            fi
+            ;;
+    esac
 }
 
 sc_files() {
     echo "ClipSync e2e file A" > "$FILE_A"
     echo "ClipSync e2e file B" > "$FILE_B"
     local out
-    out="$(pbtool files "$FILE_A" "$FILE_B" 2>&1)"
-    if [ $? -ne 0 ]; then
-        fail "could not write file URLs (pbtool: $out)"
+    out="$(pbtool files "$FILE_A" "$FILE_B" 2>&1 | tr '\n' ' ')"
+    case "$out" in
+        ok*) ;;
+        *) fail "could not write file URLs (pbtool: $out)"; return ;;
+    esac
+    check_files_item "$out"
+}
+
+# Same two files written with writeObjects([NSURL, NSURL]). Copies a filler first so the
+# re-copy is a dedup bump that moves the file item back to the top.
+sc_files_nsurl() {
+    copy_text "$FILLER files"
+    wait_until 5000 kv_eq items.0.plainText "$FILLER files"
+    local out
+    out="$(pbtool files-nsurl "$FILE_A" "$FILE_B" 2>&1 | tr '\n' ' ')"
+    case "$out" in
+        ok*) ;;
+        *) fail "could not write NSURLs (pbtool: $out)"; return ;;
+    esac
+    check_files_item "$out"
+}
+
+# g3: the two-file item written back by ClipSync (a long-running app) must give other
+# apps 2 pasteboard items, each with a public.file-url, naming both files.
+sc_files_roundtrip() {
+    restore_panel_state || { fail "panel not visible | $(state)"; return; }
+    local seeded=""
+    send_cmd "select-kind file"
+    send_cmd "item-files"
+    case "$CMD_RESULT" in
+        *"count=2 "*) ;;
+        *)
+            # Capture lost a file (see g/g2): seed a correct two-file item so the
+            # store -> writer half is still tested. Clearly labelled.
+            send_cmd "seed-files $FILE_A $FILE_B"
+            seeded="SEEDED two-file item via ClipStore ($CMD_STATUS $CMD_RESULT) because the captured item does not hold 2 URLs; "
+            restore_panel_state
+            send_cmd "select-kind file"
+            send_cmd "item-files"
+            ;;
+    esac
+    local store_view="$CMD_RESULT"
+    if ! send_cmd "copy"; then
+        fail "${seeded}copy command: $CMD_STATUS $CMD_RESULT | $(state)"
         return
     fi
-    if wait_until 5000 kv_eq items.0.kind file; then
-        local text title a b
-        text="$(kv items.0.plainText)"
-        title="$(kv items.0.title)"
-        a="$(basename "$FILE_A")"
-        b="$(basename "$FILE_B")"
-        case "$text" in
-            *"$a"*"$b"*|*"$b"*"$a"*)
-                pass "kind=file after ${WAIT_MS}ms; title='$title'; plainText mentions both files"
-                ;;
-            *)
-                fail "expected plainText to mention $a and $b; got title='$title' plainText='$text' | $(state)"
-                ;;
-        esac
-    else
-        fail "expected newest kind=file within 5s | $(state)"
-    fi
+    sleep 0.5
+    local separate count a b
+    separate="$(pbtool fileurls 2>&1 | tr '\n' ';')"
+    count="$(fileurl_count "$separate")"
+    a="$(basename "$FILE_A")"
+    b="$(basename "$FILE_B")"
+    case "$separate" in
+        *"$a"*"$b"*|*"$b"*"$a"*)
+            if [ "$count" -eq 2 ]; then
+                pass "${seeded}store: ${store_view}; after copy other processes see 2 items with public.file-url naming both files ($separate)"
+                return
+            fi
+            ;;
+    esac
+    fail "${seeded}expected 2 pasteboard items with public.file-url naming $a and $b after copy; separate process sees: ${separate} (store: ${store_view}) | $(state)"
 }
 
 # sc_marker <concealed|transient> <secret> <follow-up text>
@@ -566,9 +714,9 @@ sc_marker() {
     final="$(num "$(kv itemCount)")"
     if grep -qF "$secret" "$KV" "$JSON" 2>/dev/null; then leaked="yes"; fi
     if [ "$mid" -eq "$before" ] && [ "$leaked" = "no" ] && [ "$alive" = "yes" ] && [ "$final" -eq $(( before + 1 )) ]; then
-        pass "$which string not captured (itemCount $before→$mid), absent from status files; follow-up copy captured ($final)"
+        pass "$which string not captured (itemCount ${before}→$mid), absent from status files; follow-up copy captured ($final)"
     else
-        fail "expected: itemCount unchanged after $which write ($before→$mid), secret absent from status files (leaked=$leaked), follow-up copy captured (alive=$alive, itemCount=$final, expected $(( before + 1 ))) | $(state)"
+        fail "expected: itemCount unchanged after $which write (${before}→$mid), secret absent from status files (leaked=$leaked), follow-up copy captured (alive=$alive, itemCount=$final, expected $(( before + 1 ))) | $(state)"
     fi
 }
 sc_concealed() { sc_marker concealed "$SECRET_C" "$AFTER_C"; }
@@ -596,9 +744,9 @@ sc_pause() {
     local resumed="no"
     if wait_until 5000 kv_eq items.0.plainText "$PAUSED_TEXT"; then resumed="yes"; fi
     if [ "$mid" -eq "$before" ] && [ "$leaked" = "no" ] && [ "$resumed" = "yes" ]; then
-        pass "while paused nothing was captured (itemCount $before→$mid); after resume the copy was captured in ${WAIT_MS}ms"
+        pass "while paused nothing was captured (itemCount ${before}→$mid); after resume the copy was captured in ${WAIT_MS}ms"
     else
-        fail "expected: no capture while paused (itemCount $before→$mid, text in status=$leaked), capture after resume (resumed=$resumed) | $(state)"
+        fail "expected: no capture while paused (itemCount ${before}→$mid, text in status=$leaked), capture after resume (resumed=$resumed) | $(state)"
     fi
 }
 
@@ -678,12 +826,12 @@ sc_copy() {
     if [ "$got" = "yes" ] && [ "$after" -eq "$before" ] && [ "$newest" = "$TEXT_A" ]; then
         pass "pbpaste == original text; item is newest (markUsed); itemCount stayed $after; panelVisible=$(kv panelVisible)"
     else
-        fail "expected pbpaste='$TEXT_A' (got '$(pbpaste | head -c 80)'), itemCount unchanged ($before→$after), newest='$TEXT_A' (got '$newest') | $(state)"
+        fail "expected pbpaste='$TEXT_A' (got '$(pbpaste | head -c 80)'), itemCount unchanged (${before}→$after), newest='$TEXT_A' (got '$newest') | $(state)"
     fi
 }
 
 sc_pinboard() {
-    ensure_panel || { fail "panel not visible | $(state)"; return; }
+    restore_panel_state || { fail "panel not visible | $(state)"; return; }
     send_cmd "select-text $TEXT_A" || { fail "select-text: $CMD_RESULT | $(state)"; return; }
     send_cmd "pin"
     local pinResult="$CMD_STATUS $CMD_RESULT"
@@ -700,6 +848,8 @@ sc_pinboard() {
     send_cmd "open-pinboard Work"
     local ok_board="no"
     if wait_until 1500 visible_one_with "$UNIQ"; then ok_board="yes"; fi
+    restore_panel_state "open-pinboard Work"
+    wait_until 1500 visible_one_with "$UNIQ"
     take_snapshot "03-pinboard"
     send_cmd "open-history"
     wait_until 1000 kv_eq panelScope history
@@ -711,7 +861,7 @@ sc_pinboard() {
 }
 
 sc_delete() {
-    ensure_panel || { fail "panel not visible | $(state)"; return; }
+    restore_panel_state || { fail "panel not visible | $(state)"; return; }
     if ! send_cmd "select-text $LINK"; then
         fail "could not select the link item to delete: $CMD_RESULT | $(state)"
         return
@@ -723,7 +873,7 @@ sc_delete() {
         if grep -qF "$LINK" "$KV" 2>/dev/null; then
             fail "itemCount decreased but the deleted link is still listed in status.kv | $(state)"
         else
-            pass "deleted the link item: itemCount $before→$(kv itemCount) ($CMD_RESULT)"
+            pass "deleted the link item: itemCount ${before}→$(kv itemCount) ($CMD_RESULT)"
         fi
     else
         fail "expected itemCount $(( before - 1 )) after delete; got $(kv itemCount) ($CMD_STATUS $CMD_RESULT) | $(state)"
@@ -738,50 +888,129 @@ only_images_visible() {
 }
 
 sc_filters() {
-    ensure_panel || { fail "panel not visible | $(state)"; return; }
+    restore_panel_state || { fail "panel not visible | $(state)"; return; }
     send_cmd "filter images"
     if wait_until 1500 only_images_visible; then
         pass "filter images → $(kv visibleCardCount) card(s), all kind=image"
     else
         fail "expected only image cards (≥1) with filter=images; visibleKinds='$(kv visibleKinds)' filter=$(kv panelFilter) ($CMD_STATUS $CMD_RESULT) | $(state)"
     fi
+    restore_panel_state "filter images"
+    wait_until 1500 only_images_visible
     take_snapshot "04-images"
     send_cmd "filter all"
     wait_until 1000 kv_eq panelFilter all
 }
 
 TEXTEDIT_READY="no"
+TEXTEDIT_DIAG=""
+TEXTEDIT_BUG=""
+
+# Frontmost app according to the OS (lsappinfo needs no permission), for cross-checks.
+os_front_app() {
+    local asn
+    asn="$(run_with_timeout 5 lsappinfo front 2>/dev/null)"
+    [ -n "$asn" ] || return 0
+    run_with_timeout 5 lsappinfo info -only bundleid "$asn" 2>/dev/null \
+        | sed -n 's/.*"CFBundleIdentifier"="\([^"]*\)".*/\1/p' | head -n 1
+}
+
+textedit_is_target() {
+    kv_eq frontmostApp "com.apple.TextEdit" && kv_eq pasteTarget "com.apple.TextEdit"
+}
+
+# Records what the OS and ClipSync each think is frontmost, and classifies a mismatch.
+textedit_diagnose() {
+    local os_front app_front target previous
+    os_front="$(os_front_app)"
+    app_front="$(kv frontmostApp)"
+    target="$(kv pasteTarget)"
+    previous="$(kv trackerPreviousApp)"
+    TEXTEDIT_DIAG="OS frontmost (lsappinfo)=${os_front:-?}, ClipSync frontmostApp=${app_front}, pasteTarget=${target}, trackerPreviousApp=${previous}"
+    TEXTEDIT_BUG=""
+    if [ "$app_front" = "com.apple.TextEdit" ] && [ "$target" != "com.apple.TextEdit" ]; then
+        TEXTEDIT_BUG="PRODUCT BUG (FrontmostAppTracker): frontmostApp is TextEdit but pasteTarget is '${target}'"
+    elif [ "$os_front" = "com.apple.TextEdit" ] && [ "$app_front" != "com.apple.TextEdit" ]; then
+        TEXTEDIT_BUG="PRODUCT BUG (ClipSync does not see activations): the OS says TextEdit is frontmost, ClipSync still reports '${app_front}'"
+    fi
+}
+
+# Opens the target document and waits until TextEdit is frontmost AND the paste target,
+# stable for 1 s. Retries the activation (macOS may hand activation back to the previously
+# active app when a background process asks for it).
+textedit_activate() {
+    local attempt=1
+    while [ "$attempt" -le 3 ]; do
+        open -a TextEdit "$TARGET_DOC" >> "$LOG" 2>&1
+        if wait_until 5000 textedit_is_target; then
+            sleep 1
+            if textedit_is_target; then
+                textedit_diagnose
+                log "TextEdit is frontmost and the paste target (attempt $attempt; ${TEXTEDIT_DIAG})"
+                return 0
+            fi
+        fi
+        textedit_diagnose
+        log "attempt $attempt: TextEdit is not (stably) the paste target: ${TEXTEDIT_DIAG}"
+        attempt=$(( attempt + 1 ))
+    done
+    return 1
+}
+
 textedit_setup() {
     : > "$TARGET_DOC"
     send_cmd "hide" >/dev/null
-    open -a TextEdit "$TARGET_DOC" >> "$LOG" 2>&1
-    if wait_until 10000 kv_eq frontmostApp "com.apple.TextEdit"; then
+    if textedit_activate; then
         TEXTEDIT_READY="yes"
-        sleep 0.8   # let the document window become key
-        log "TextEdit is frontmost after ${WAIT_MS}ms"
-    else
-        log "TextEdit did not become frontmost (frontmostApp=$(kv frontmostApp))"
     fi
 }
 
-TEXTEDIT_SKIP_REASON="TextEdit did not become the frontmost app within 10s (frontmostApp in status.kv was not com.apple.TextEdit); paste scenarios skipped so ⌘V is never sent to an unknown app"
-
-# Shows the panel while TextEdit is frontmost; returns 1 if the paste target is not TextEdit.
+# Shows the panel while TextEdit is the paste target. Returns 1 when TextEdit is not the
+# target (re-activates once first). Sets TEXTEDIT_BUG when show() changed the target.
 show_over_textedit() {
-    kv_eq frontmostApp "com.apple.TextEdit" || return 1
+    if ! textedit_is_target; then
+        send_cmd "hide" >/dev/null
+        textedit_activate || return 1
+    fi
     send_cmd "show" >/dev/null
     wait_until 1000 kv_eq panelVisible true || return 1
-    wait_until 1000 kv_eq pasteTarget "com.apple.TextEdit"
+    sleep 0.3
+    if ! kv_eq pasteTarget "com.apple.TextEdit"; then
+        textedit_diagnose
+        TEXTEDIT_BUG="PRODUCT BUG: showing the non-activating panel changed the paste target to '$(kv pasteTarget)' (${TEXTEDIT_DIAG})"
+        return 1
+    fi
+    return 0
 }
 
-sc_paste_plain() {
-    if [ "$TEXTEDIT_READY" != "yes" ]; then
-        skip "$TEXTEDIT_SKIP_REASON"
-        return
+ax_granted_now() {
+    send_cmd "status" >/dev/null
+    kv_eq accessibilityGranted true
+}
+
+no_textedit_reason() {
+    if [ -n "$TEXTEDIT_BUG" ]; then
+        echo "${TEXTEDIT_BUG}; ${TEXTEDIT_DIAG}"
+    else
+        echo "TextEdit could not be made the frontmost app and paste target within 3 attempts (${TEXTEDIT_DIAG}); not pasting so that no keystroke goes to another app"
     fi
-    if ! show_over_textedit; then
-        skip "paste target is not TextEdit (frontmost=$(kv frontmostApp), pasteTarget=$(kv pasteTarget)); not pasting | $(state)"
-        return
+}
+
+# n: needs no Accessibility to verify the pasteboard. Runs when TextEdit is the target,
+# or when Accessibility is off (then paste is copy-only and no keystroke is sent anywhere).
+sc_paste_plain() {
+    local where="TextEdit"
+    if [ "$TEXTEDIT_READY" != "yes" ] || ! show_over_textedit; then
+        if [ -n "$TEXTEDIT_BUG" ]; then
+            fail "$(no_textedit_reason) | $(state)"
+            return
+        fi
+        if ax_granted_now; then
+            skip "$(no_textedit_reason)"
+            return
+        fi
+        where="no target (Accessibility off: copy-only, no keystroke)"
+        restore_panel_state || { fail "panel not visible | $(state)"; return; }
     fi
     if ! send_cmd "select-kind richText"; then
         fail "no rich text card to select: $CMD_RESULT | $(state)"
@@ -791,31 +1020,31 @@ sc_paste_plain() {
     local result="$CMD_STATUS $CMD_RESULT"
     wait_until 1000 kv_eq lastPaste.asPlainText true
     local types text
-    types="$(pbtool types 2>&1 | tr '\n' ' ')"
+    types="$(pbtool items 2>&1 | tr '\n' ' ')"
     text="$(pbpaste)"
     sleep 1
     case " $types " in
         *" public.rtf "*)
-            fail "expected no public.rtf after paste-plain; pasteboard types: $types ($result) | $(state)"
+            fail "expected no public.rtf after paste-plain; pasteboard: $types ($result) | $(state)"
             ;;
         *" public.utf8-plain-text "*)
             case "$text" in
                 *"$RICH_TOKEN"*)
-                    pass "pasteboard has plain text only (types: $types); mode=$(kv lastPaste.mode) asPlainText=$(kv lastPaste.asPlainText)"
+                    pass "pasteboard has plain text only ($types); mode=$(kv lastPaste.mode) asPlainText=$(kv lastPaste.asPlainText); target: $where"
                     ;;
                 *)
-                    fail "plain text on pasteboard is '$text', expected it to contain '$RICH_TOKEN' (types: $types) | $(state)"
+                    fail "plain text on pasteboard is '${text}', expected it to contain '${RICH_TOKEN}' ($types) | $(state)"
                     ;;
             esac
             ;;
         *)
-            fail "expected public.utf8-plain-text on the pasteboard after paste-plain; types: $types ($result) | $(state)"
+            fail "expected public.utf8-plain-text on the pasteboard after paste-plain; pasteboard: $types ($result) | $(state)"
             ;;
     esac
 }
 
-AX_STEP="System Settings › Privacy & Security › Accessibility: click +, add $MAC_APP and switch it on. run-mac starts the binary from the Terminal that runs scripts/watch.sh, so macOS may attribute it to that terminal app: switch that app on too. Ad-hoc rebuilds change the signature: after a rebuild remove ClipSync from the list and add it again."
-AUTOMATION_STEP="System Settings › Privacy & Security › Automation: under the terminal app that runs scripts/watch.sh, switch on TextEdit (or answer OK to the 'wants to control TextEdit' prompt, then run run-mac again)."
+AX_STEP="System Settings > Privacy & Security > Accessibility: switch on \"ClipSync\" if it is listed (at the end of every E2E run without Accessibility the app asks macOS to add it, so it should be listed after the first run), otherwise switch on \"Terminal\" (run-mac starts ClipSync as a child of the Terminal that runs scripts/watch.sh, so macOS may attribute the permission to Terminal). Each rebuild changes the ad-hoc signature: remove ClipSync from the list with the minus button and run run-mac again."
+AUTOMATION_STEP="System Settings > Privacy & Security > Automation > Terminal: switch on TextEdit (or answer OK to the 'Terminal wants to control TextEdit' prompt), then run run-mac again."
 
 read_textedit_doc() {
     run_with_timeout 15 osascript \
@@ -828,19 +1057,18 @@ read_textedit_doc() {
         -e "end tell" 2>&1
 }
 
-FALLBACK_STATUS=""
-FALLBACK_DETAIL=""
+# o: real ⌘V into TextEdit. Needs Accessibility and TextEdit as the paste target.
 sc_paste_real() {
-    FALLBACK_STATUS="SKIP"
-    FALLBACK_DETAIL="paste scenario did not run"
-    if [ "$TEXTEDIT_READY" != "yes" ]; then
-        skip "$TEXTEDIT_SKIP_REASON"
-        FALLBACK_DETAIL="$TEXTEDIT_SKIP_REASON"
+    if ! ax_granted_now; then
+        skip "Accessibility not granted (accessibilityGranted=false), so ClipSync cannot send ⌘V; the copy-only fallback is tested in o2. To enable: $AX_STEP"
         return
     fi
-    if ! show_over_textedit; then
-        skip "paste target is not TextEdit (frontmost=$(kv frontmostApp), pasteTarget=$(kv pasteTarget)); not pasting | $(state)"
-        FALLBACK_DETAIL="paste target was not TextEdit"
+    if [ "$TEXTEDIT_READY" != "yes" ] || ! show_over_textedit; then
+        if [ -n "$TEXTEDIT_BUG" ]; then
+            fail "$(no_textedit_reason) | $(state)"
+        else
+            skip "$(no_textedit_reason)"
+        fi
         return
     fi
     if ! send_cmd "select-text $TEXT_A"; then
@@ -850,32 +1078,18 @@ sc_paste_real() {
     send_cmd "paste"
     local result="$CMD_STATUS $CMD_RESULT"
     wait_until 1500 kv_contains lastPaste.text "$UNIQ"
-    local mode ax
+    local mode
     mode="$(kv lastPaste.mode)"
-    ax="$(kv accessibilityGranted)"
-    if [ "$mode" = "copyOnly" ] || [ "$ax" = "false" ]; then
-        skip "Accessibility not granted (accessibilityGranted=$ax, app reported mode=$mode), so no ⌘V was sent. To enable: $AX_STEP"
-        if [ "$mode" = "copyOnly" ] && [ "$(pbpaste)" = "$TEXT_A" ]; then
-            FALLBACK_STATUS="PASS"
-            FALLBACK_DETAIL="lastPaste.mode=copyOnly and pbpaste == the item's text"
-        else
-            FALLBACK_STATUS="FAIL"
-            FALLBACK_DETAIL="expected lastPaste.mode=copyOnly and pbpaste='$TEXT_A'; got mode='$mode', pbpaste='$(pbpaste | head -c 80)' ($result) | $(state)"
-        fi
-        return
-    fi
-    FALLBACK_STATUS="SKIP"
-    FALLBACK_DETAIL="Accessibility is granted (mode=$mode); the copy-only fallback was not exercised"
     if [ "$mode" != "paste" ]; then
-        fail "expected lastPaste.mode=paste; got '$mode' ($result) | $(state)"
+        fail "expected lastPaste.mode=paste with Accessibility granted; got '${mode}' ($result) | $(state)"
         return
     fi
-    sleep 1.2   # ⌘V goes out 80–250 ms after the paste; give TextEdit time
+    sleep 1.2   # the keystroke goes out 80-250 ms after the paste; give TextEdit time
     local doc rc
     doc="$(read_textedit_doc)"
     rc=$?
     if [ $rc -ne 0 ]; then
-        skip "⌘V was sent (mode=paste) but osascript could not read the TextEdit document (exit $rc: $(printf '%s' "$doc" | head -c 160)). Most likely Automation permission is missing. To enable: $AUTOMATION_STEP"
+        skip "the keystroke was sent (mode=paste) but osascript could not read the TextEdit document (exit $rc: $(printf '%s' "$doc" | head -c 160)). Most likely Automation permission is missing. To enable: $AUTOMATION_STEP"
         return
     fi
     case "$doc" in
@@ -883,14 +1097,64 @@ sc_paste_real() {
             pass "TextEdit document contains the pasted text (mode=paste, document length ${#doc})"
             ;;
         *)
-            fail "expected TextEdit document to contain '$TEXT_A'; document text: '$(printf '%s' "$doc" | head -c 160)' (mode=$mode, frontmost=$(kv frontmostApp)) | $(state)"
+            fail "expected TextEdit document to contain '${TEXT_A}'; document text: '$(printf '%s' "$doc" | head -c 160)' (mode=$mode) | $(state)"
             ;;
     esac
 }
 
+# o2: without Accessibility, paste must fall back to copy-only. Safe anywhere: no keystroke.
 sc_paste_fallback() {
-    SC_STATUS="$FALLBACK_STATUS"
-    SC_DETAIL="$FALLBACK_DETAIL"
+    if ax_granted_now; then
+        skip "Accessibility is granted, so the copy-only fallback cannot be exercised in this run"
+        return
+    fi
+    restore_panel_state || { fail "panel not visible | $(state)"; return; }
+    if ! send_cmd "select-text $TEXT_A"; then
+        fail "could not select the text item: $CMD_RESULT | $(state)"
+        return
+    fi
+    send_cmd "paste"
+    local result="$CMD_STATUS $CMD_RESULT"
+    wait_until 1500 kv_contains lastPaste.text "$UNIQ"
+    local mode got="no"
+    mode="$(kv lastPaste.mode)"
+    if wait_until 2000 pb_equals "$TEXT_A"; then got="yes"; fi
+    if [ "$mode" = "copyOnly" ] && [ "$got" = "yes" ]; then
+        pass "lastPaste.mode=copyOnly, lastPaste.text='$(kv lastPaste.text)', pbpaste equals the item text, panelVisible=$(kv panelVisible)"
+    else
+        fail "expected lastPaste.mode=copyOnly and pbpaste='${TEXT_A}'; got mode='${mode}', pbpaste='$(pbpaste | head -c 80)' ($result) | $(state)"
+    fi
+}
+
+# v: copying an image must offer image data to other apps and never ClipSync-internal
+# representations (thumbnails, file lists, ...). The own-write marker is intentional.
+sc_image_copy_types() {
+    restore_panel_state || { fail "panel not visible | $(state)"; return; }
+    if ! send_cmd "select-kind image"; then
+        fail "no image card to select: $CMD_RESULT | $(state)"
+        return
+    fi
+    if ! send_cmd "copy"; then
+        fail "copy command: $CMD_STATUS $CMD_RESULT | $(state)"
+        return
+    fi
+    sleep 0.3
+    local types
+    types="$(pbtool items 2>&1 | tr '\n' ' ')"
+    local leaked
+    leaked="$(printf '%s' "$types" | tr ' ' '\n' | grep '^com\.thingbits\.clipsync\.' | grep -v '^com\.thingbits\.clipsync\.own-write$' | tr '\n' ' ')"
+    case " $types " in
+        *" public.png "*|*" public.tiff "*)
+            if [ -n "$leaked" ]; then
+                fail "internal ClipSync types leaked to the pasteboard: ${leaked}(all: $types) | $(state)"
+            else
+                pass "pasteboard offers image data and no internal representations ($types; own-write marker is intentional)"
+            fi
+            ;;
+        *)
+            fail "expected public.png or public.tiff on the pasteboard after copying the image item; got: $types | $(state)"
+            ;;
+    esac
 }
 
 textedit_cleanup() {
@@ -935,7 +1199,7 @@ sc_scale() {
     fi
     send_cmd "clear-search" >/dev/null
     send_cmd "hide" >/dev/null
-    local metrics="SEEDED (ClipStore.ingest, not pasteboard): $seedResult; itemCount $before→$after; show after seeding ${show1}ms, again ${show2}ms (threshold <100); search '$token' ${searchMs}ms [$searchSource] incl. 120ms debounce (threshold <300), found=$found, script-observed ${searchWall}ms"
+    local metrics="SEEDED (ClipStore.ingest, not pasteboard): $seedResult; itemCount ${before}→$after; show after seeding ${show1}ms, again ${show2}ms (threshold <100); search '$token' ${searchMs}ms [$searchSource] incl. 120ms debounce (threshold <300), found=$found, script-observed ${searchWall}ms"
     if [ "$after" -lt $(( before + 2000 )) ]; then
         fail "expected itemCount ≥ $(( before + 2000 )) after seeding; $metrics | $(state)"
     elif [ "$found" != "yes" ]; then
@@ -966,6 +1230,140 @@ sc_windows() {
         pass "settings and onboarding windows opened and closed ($closeResult; openWindows now '$(kv openWindows)')"
     else
         fail "expected openWindows to include settings (got $settings) and onboarding (got $onboarding); openWindows='$(kv openWindows)' | $(state)"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Security: App Lock (driver commands `lock` / `unlock-for-test`, DEBUG + UITEST only)
+# and the link-preview network gate.
+# ---------------------------------------------------------------------------
+
+item_count_above() { [ "$(num "$(kv itemCount)")" -gt "$1" ]; }
+cards_visible() { [ "$(num "$(kv visibleCardCount)")" -gt 0 ]; }
+
+# w1: `lock` → status locked=true, appLockEnabled=true, item text redacted.
+sc_lock() {
+    send_cmd "hide" >/dev/null
+    if ! send_cmd "lock"; then
+        fail "lock command: $CMD_STATUS $CMD_RESULT | $(state)"
+        return
+    fi
+    if ! wait_until 2000 kv_eq locked true; then
+        fail "expected locked=true within 2s of 'lock' ($CMD_RESULT) | $(state)"
+        return
+    fi
+    if kv_eq appLockEnabled true && kv_eq itemsRedacted true && kv_eq items.0.plainText "$REDACTED"; then
+        pass "locked=true after ${WAIT_MS}ms; appLockEnabled=true; items redacted (items.0.plainText='$(kv items.0.plainText)', lastCapturedTextPrefix='$(kv lastCapturedTextPrefix)'); windowsHiddenFromCapture=$(kv windowsHiddenFromCapture) (off in test mode by design)"
+    else
+        fail "locked=true but appLockEnabled=$(kv appLockEnabled) itemsRedacted=$(kv itemsRedacted) items.0.plainText='$(kv items.0.plainText)' | $(state)"
+    fi
+}
+
+# w2: the hotkey path (show) still opens the panel while locked, but it renders no cards.
+sc_locked_panel() {
+    if ! kv_eq locked true; then
+        fail "precondition: ClipSync is not locked (did w1 fail?) | $(state)"
+        return
+    fi
+    send_cmd "show"
+    if ! wait_until 1000 kv_eq panelVisible true; then
+        fail "panel did not open while locked: $CMD_STATUS $CMD_RESULT | $(state)"
+        return
+    fi
+    sleep 0.4
+    if kv_eq visibleCardCount 0 && kv_eq rows.0.text "" && kv_eq locked true; then
+        pass "panel open while locked: visibleCardCount=0, no rows in status (lock screen only)"
+    else
+        fail "expected visibleCardCount=0 and no rows while locked; got visibleCardCount=$(kv visibleCardCount) rows.0.text='$(kv rows.0.text)' | $(state)"
+    fi
+}
+
+# w3: every content command is refused with "locked"; the pasteboard is untouched.
+sc_locked_refuses() {
+    if ! kv_eq locked true; then
+        fail "precondition: ClipSync is not locked | $(state)"
+        return
+    fi
+    local pb_before results="" bad="" c
+    pb_before="$(pbpaste)"
+    for c in "select 0" "paste" "paste-plain" "copy" "search e2e" "delete"; do
+        send_cmd "$c"
+        results="$results [$c: $CMD_STATUS $CMD_RESULT]"
+        if [ "$CMD_STATUS" != "err" ]; then
+            bad="$bad '$c' status=$CMD_STATUS;"
+            continue
+        fi
+        case "$CMD_RESULT" in
+            *locked*) ;;
+            *) bad="$bad '$c' result has no 'locked';" ;;
+        esac
+    done
+    local pb_same="no"
+    if [ "$(pbpaste)" = "$pb_before" ]; then pb_same="yes"; fi
+    if [ -z "$bad" ] && [ "$pb_same" = "yes" ] && kv_eq visibleCardCount 0; then
+        pass "all refused with 'locked'; pasteboard unchanged;$results"
+    else
+        fail "expected err + 'locked' for every command and an unchanged pasteboard (same=$pb_same); problems:$bad$results | $(state)"
+    fi
+}
+
+# w4: capture keeps running while locked, but the status never exposes the new text.
+sc_locked_capture() {
+    if ! kv_eq locked true; then
+        fail "precondition: ClipSync is not locked | $(state)"
+        return
+    fi
+    local before
+    before="$(num "$(kv itemCount)")"
+    copy_text "$LOCKED_TEXT"
+    if ! wait_until 5000 item_count_above "$before"; then
+        fail "expected itemCount > $before within 5s (capture must continue while locked) | $(state)"
+        return
+    fi
+    local ms=$WAIT_MS
+    sleep 0.5
+    local leaked="no"
+    if grep -qF "$LOCKED_TEXT" "$KV" 2>/dev/null || grep -qF "$LOCKED_TEXT" "$JSON" 2>/dev/null; then
+        leaked="yes"
+    fi
+    if [ "$leaked" = "no" ] && kv_eq items.0.plainText "$REDACTED" && kv_eq lastCapturedTextPrefix "$REDACTED" && kv_eq visibleCardCount 0; then
+        pass "captured while locked after ${ms}ms (itemCount ${before}→$(kv itemCount)); text absent from status.kv/status.json; visibleCardCount=0"
+    else
+        fail "expected the copy to be captured but redacted: leaked=$leaked items.0.plainText='$(kv items.0.plainText)' lastCapturedTextPrefix='$(kv lastCapturedTextPrefix)' visibleCardCount=$(kv visibleCardCount) | $(state)"
+    fi
+}
+
+# w5: `unlock-for-test` (test hook, no system prompt) brings the cards back.
+sc_unlock_for_test() {
+    if ! send_cmd "unlock-for-test"; then
+        fail "unlock-for-test command: $CMD_STATUS $CMD_RESULT | $(state)"
+        return
+    fi
+    if ! wait_until 2000 kv_eq locked false; then
+        fail "expected locked=false after unlock-for-test ($CMD_RESULT) | $(state)"
+        return
+    fi
+    restore_panel_state
+    if wait_until 2000 cards_visible && wait_until 2000 kv_eq items.0.plainText "$LOCKED_TEXT"; then
+        pass "unlocked: visibleCardCount=$(kv visibleCardCount); the item captured while locked is newest and readable again; appLockEnabled=$(kv appLockEnabled)"
+    else
+        fail "expected cards and items.0.plainText='$LOCKED_TEXT' after unlocking; got visibleCardCount=$(kv visibleCardCount) items.0.plainText='$(kv items.0.plainText)' | $(state)"
+    fi
+    send_cmd "hide" >/dev/null
+}
+
+# x: with link previews off (the default) copying a web link makes no fetch.
+sc_no_link_fetch() {
+    copy_text "$LINK_NOFETCH"
+    if ! wait_until 5000 kv_eq items.0.plainText "$LINK_NOFETCH"; then
+        fail "expected newest plainText='$LINK_NOFETCH' within 5s | $(state)"
+        return
+    fi
+    sleep 1.5   # enrichment runs asynchronously after capture
+    if kv_eq linkPreviewsEnabled false && kv_eq linkFetchAttempts 0 && kv_eq items.0.kind link; then
+        pass "kind=link, linkPreviewsEnabled=false, linkFetchAttempts=0 (no network request for link previews this run)"
+    else
+        fail "expected linkPreviewsEnabled=false and linkFetchAttempts=0; got linkPreviewsEnabled=$(kv linkPreviewsEnabled) linkFetchAttempts=$(kv linkFetchAttempts) kind=$(kv items.0.kind) | $(state)"
     fi
 }
 
@@ -1093,6 +1491,14 @@ write_results() {
             i=$(( i + 1 ))
         done
         if [ "$any" = "no" ]; then echo "None."; echo; fi
+        echo "## Not covered"
+        echo
+        echo "- Persistence across relaunch (UITEST mode uses an in-memory store)"
+        echo "- iCloud sync"
+        echo "- Global hotkey press (the test calls show/hide directly)"
+        echo "- Real ⌘V without Accessibility (impossible by design: paste falls back to copy-only, see o2)"
+        echo "- Quick Look"
+        echo
         echo "## Snapshots"
         echo
         (cd "$SHOTS" 2>/dev/null && ls *.png 2>/dev/null) | while read -r f; do
@@ -1181,13 +1587,18 @@ run_scenario "c" "link classification" sc_link
 run_scenario "d" "color classification" sc_color
 run_scenario "e" "rich text (RTF + plain)" sc_rich
 run_scenario "f" "image (400x300 PNG)" sc_image
-run_scenario "g" "files (two file URLs)" sc_files
+run_scenario "g" "files (two file URLs, Finder-style items)" sc_files
+run_scenario "g2" "files (two file URLs via writeObjects NSURL)" sc_files_nsurl
+run_scenario "g3" "files round trip (store -> PasteboardWriter -> 2 items)" sc_files_roundtrip
 run_scenario "h" "password safety: ConcealedType" sc_concealed
 run_scenario "h2" "password safety: TransientType" sc_transient
 run_scenario "i" "pause / resume capture" sc_pause
 run_scenario "j" "panel show" sc_panel_show
+restore_panel_state
 take_snapshot "01-panel"
 run_scenario "k" "search" sc_search
+restore_panel_state "search $UNIQ"
+wait_until 2000 visible_one_with "$UNIQ"
 take_snapshot "02-search"
 send_cmd "clear-search" >/dev/null
 wait_until 1000 kv_eq panelSearchText ""
@@ -1196,6 +1607,7 @@ run_scenario "m" "copy action (⌘C path)" sc_copy
 run_scenario "p" "pin + pinboards" sc_pinboard
 run_scenario "q" "delete selected" sc_delete
 run_scenario "r" "kind filter: images" sc_filters
+run_scenario "v" "copied image exposes no internal types" sc_image_copy_types
 textedit_setup
 run_scenario "n" "paste as plain text (⇧↩ path)" sc_paste_plain
 run_scenario "o" "real paste into TextEdit (↩ path)" sc_paste_real
@@ -1203,10 +1615,22 @@ run_scenario "o2" "paste falls back to copy without Accessibility" sc_paste_fall
 textedit_cleanup
 run_scenario "s" "scale: 2,000 seeded items" sc_scale
 run_scenario "t" "settings + onboarding windows" sc_windows
+run_scenario "w1" "app lock: lock command" sc_lock
+run_scenario "w2" "app lock: panel shows no cards while locked" sc_locked_panel
+take_snapshot "07-locked"
+run_scenario "w3" "app lock: paste/copy/select refused while locked" sc_locked_refuses
+run_scenario "w4" "app lock: capture continues, status redacted" sc_locked_capture
+run_scenario "w5" "app lock: unlock-for-test restores content" sc_unlock_for_test
+run_scenario "x" "link previews off: no fetch for a copied URL" sc_no_link_fetch
 run_scenario "u" "idle CPU (panel hidden)" sc_idle_cpu
 
 send_cmd "hide" >/dev/null
 restore_clipboard
+if ! ax_granted_now; then
+    # Makes macOS add ClipSync to the Accessibility list (system dialog; done last on purpose).
+    send_cmd "request-ax-prompt" 10
+    log "Accessibility prompt: $CMD_STATUS $CMD_RESULT"
+fi
 write_results
 if [ "$FINAL_FAILED" -gt 0 ]; then
     exit 1

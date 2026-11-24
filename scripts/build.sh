@@ -73,6 +73,55 @@ do_core_test() {
 
 do_mac() {
     ensure_project || return 1
+    # Signed mode: a file signing.local at the repo root with a line TEAM_ID=<10 characters>
+    # (see signing.local.example). Anything else in the file is ignored.
+    local team=""
+    if [ -f "$ROOT/signing.local" ]; then
+        team="$(tr -d '\r' < "$ROOT/signing.local" | grep -E '^[[:space:]]*TEAM_ID=[A-Z0-9]{10}[[:space:]]*$' | head -n 1 | sed -E 's/^[[:space:]]*TEAM_ID=([A-Z0-9]{10})[[:space:]]*$/\1/')"
+        if [ -z "$team" ]; then
+            echo "warning: signing.local has no valid TEAM_ID=XXXXXXXXXX line (10 capital letters/digits); building unsigned"
+        fi
+    fi
+    local mirror_marker="$BUILD_DIR/.mac-signed-mirror"
+    if [ -n "$team" ]; then
+        echo "==> signing mode: SIGNED (configuration Signed, team ${team}, automatic signing, -allowProvisioningUpdates)"
+        xcodebuild \
+            -project "$PROJECT" \
+            -scheme ClipSyncMac \
+            -configuration Signed \
+            -destination "platform=macOS" \
+            -derivedDataPath "$DERIVED" \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            -allowProvisioningUpdates \
+            DEVELOPMENT_TEAM="$team" \
+            build || return 1
+        local signed_app="$DERIVED/Build/Products/Signed/ClipSync.app"
+        if [ ! -d "$signed_app" ]; then
+            echo "error: signed build finished but $signed_app is missing" >&2
+            return 1
+        fi
+        # run-mac and e2e-mac.sh launch the Debug product path: put the signed app there.
+        rm -rf "$MAC_APP"
+        mkdir -p "$(dirname "$MAC_APP")"
+        ditto "$signed_app" "$MAC_APP" || return 1
+        touch "$mirror_marker"
+        echo "==> signed app: $signed_app (copied to $MAC_APP for run-mac)"
+        return 0
+    fi
+    echo "==> signing mode: UNSIGNED (configuration Debug, ad-hoc, no entitlements, iCloud off; add signing.local to sign)"
+    build_mac_unsigned_debug
+}
+
+# Unsigned Debug build at the Debug product path (also used by run-mac in signed mode:
+# the E2E test hooks are compiled only into DEBUG builds, never into Release/Signed).
+build_mac_unsigned_debug() {
+    local mirror_marker="$BUILD_DIR/.mac-signed-mirror"
+    if [ -f "$mirror_marker" ]; then
+        # The Debug path holds a copy of an earlier signed app: force a clean unsigned product.
+        rm -rf "$MAC_APP"
+        rm -f "$mirror_marker"
+    fi
     xcodebuild \
         -project "$PROJECT" \
         -scheme ClipSyncMac \
@@ -86,6 +135,47 @@ do_mac() {
 
 do_ios() {
     ensure_project || return 1
+    # Signed mode: same signing.local rule as do_mac. Still builds for the Simulator; the
+    # Signed configuration embeds the App Group / iCloud entitlements for the Simulator.
+    local team=""
+    if [ -f "$ROOT/signing.local" ]; then
+        team="$(tr -d '\r' < "$ROOT/signing.local" | grep -E '^[[:space:]]*TEAM_ID=[A-Z0-9]{10}[[:space:]]*$' | head -n 1 | sed -E 's/^[[:space:]]*TEAM_ID=([A-Z0-9]{10})[[:space:]]*$/\1/')"
+        if [ -z "$team" ]; then
+            echo "warning: signing.local has no valid TEAM_ID=XXXXXXXXXX line (10 capital letters/digits); building unsigned"
+        fi
+    fi
+    local mirror_marker="$BUILD_DIR/.ios-signed-mirror"
+    if [ -n "$team" ]; then
+        echo "==> signing mode: SIGNED (configuration Signed, team ${team}, automatic signing, -allowProvisioningUpdates, iOS Simulator)"
+        xcodebuild \
+            -project "$PROJECT" \
+            -scheme ClipSyncIOS \
+            -configuration Signed \
+            -destination "generic/platform=iOS Simulator" \
+            -derivedDataPath "$DERIVED" \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            -allowProvisioningUpdates \
+            DEVELOPMENT_TEAM="$team" \
+            build || return 1
+        local signed_app="$DERIVED/Build/Products/Signed-iphonesimulator/ClipSync.app"
+        if [ ! -d "$signed_app" ]; then
+            echo "error: signed build finished but $signed_app is missing" >&2
+            return 1
+        fi
+        # ios-sim-run installs the Debug product path: put the signed app there.
+        rm -rf "$IOS_APP"
+        mkdir -p "$(dirname "$IOS_APP")"
+        ditto "$signed_app" "$IOS_APP" || return 1
+        touch "$mirror_marker"
+        echo "==> signed app: $signed_app (copied to $IOS_APP for ios-sim-run)"
+        return 0
+    fi
+    echo "==> signing mode: UNSIGNED (configuration Debug, no signing, no entitlements, iCloud off; add signing.local to sign)"
+    if [ -f "$mirror_marker" ]; then
+        rm -rf "$IOS_APP"
+        rm -f "$mirror_marker"
+    fi
     xcodebuild \
         -project "$PROJECT" \
         -scheme ClipSyncIOS \
@@ -117,6 +207,13 @@ MAC_BINARY="$MAC_APP/Contents/MacOS/ClipSync"
 do_run_mac() {
     # Always (incrementally) rebuild so the E2E test never runs a stale binary.
     do_mac || return 1
+    if [ -f "$BUILD_DIR/.mac-signed-mirror" ]; then
+        # Security fence: Signed (release) builds contain no E2E driver / status writer, so
+        # the end-to-end test needs the Debug build. The signed app stays in
+        # build/DerivedData/Build/Products/Signed/.
+        echo "==> run-mac: the Signed build has no E2E test hooks (Release/Signed builds never do); building the unsigned Debug app for the E2E run"
+        build_mac_unsigned_debug || return 1
+    fi
     if [ ! -x "$MAC_BINARY" ]; then
         echo "error: $MAC_BINARY not found after building" >&2
         return 1

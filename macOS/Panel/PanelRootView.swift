@@ -10,16 +10,29 @@ import ClipCore
 
 struct PanelRootView: View {
     @ObservedObject var viewModel: PanelViewModel
+    /// App Lock: while locked ONLY the lock screen is shown. The (empty) content stays in
+    /// the hierarchy, invisible and inert, so the search field's weak reference survives.
+    @ObservedObject var appLock: AppLockController
+    let onUnlock: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            PanelTopBar(viewModel: viewModel)
-            PanelCardStrip(viewModel: viewModel)
+        let locked = appLock.isLocked
+        ZStack {
+            VStack(alignment: .leading, spacing: 10) {
+                PanelTopBar(viewModel: viewModel)
+                PanelCardStrip(viewModel: viewModel)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 10)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .opacity(locked ? 0 : 1)
+            .allowsHitTesting(!locked)
+            .accessibilityHidden(locked)
+            if locked {
+                PanelLockView(appLock: appLock, onUnlock: onUnlock)
+            }
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 12)
-        .padding(.bottom, 10)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 

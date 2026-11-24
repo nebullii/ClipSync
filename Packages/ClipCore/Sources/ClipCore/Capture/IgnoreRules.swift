@@ -18,7 +18,19 @@ public struct IgnoreRules: Codable, Sendable, Equatable {
         "com.8bit.bitwarden",
         "com.apple.keychainaccess",
         "com.apple.Passwords",
-        "org.keepassxc.keepassxc"
+        "org.keepassxc.keepassxc",
+        "org.keepassxc.*",
+        // Added by the security pass (additive; prefix rules cover editions/helpers).
+        "com.lastpass.LastPass",
+        "com.lastpass.*",
+        "com.dashlane.dashlanephonefinal",
+        "com.dashlane.*",
+        "me.proton.pass.electron",
+        "me.proton.pass.*",
+        "in.sinew.Enpass-Desktop",
+        "in.sinew.*",
+        "com.markmcguill.strongbox",
+        "com.markmcguill.strongbox.*"
     ]
 
     /// Bundle IDs (or prefix rules) added by the user.

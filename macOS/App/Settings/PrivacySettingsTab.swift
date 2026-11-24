@@ -17,7 +17,7 @@ struct PrivacySettingsTab: View {
             Section("Ignored Apps") {
                 Toggle("Always ignore password managers", isOn: $settings.ignoreRules.includeDefaults)
                     .accessibilityLabel("Always ignore password managers")
-                SettingsFootnote("1Password, Bitwarden, Keychain Access, Passwords and KeePassXC. Anything an app marks as a password or as temporary is never recorded, whichever app it comes from.")
+                SettingsFootnote("1Password, Bitwarden, Dashlane, Enpass, KeePassXC, Keychain Access, LastPass, Passwords, Proton Pass and Strongbox. Anything an app marks as a password or as temporary is never recorded, whichever app it comes from.")
 
                 if settings.ignoredBundleIDs.isEmpty {
                     Text("No other apps are ignored.")

@@ -83,6 +83,9 @@ public struct StoreLocation: Sendable, Equatable {
         }
         try? fileManager.createDirectory(at: location.directory, withIntermediateDirectories: true)
         try? fileManager.createDirectory(at: location.blobsDirectory, withIntermediateDirectories: true)
+        // Owner-only permissions (0700 folders / 0600 files; iOS: data-protection class).
+        // Best effort; see StoreFileProtection.
+        StoreFileProtection.protectTree(at: location.directory)
         return location
     }
 

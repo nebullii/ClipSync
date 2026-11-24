@@ -56,24 +56,28 @@ public typealias ClipItemEntity = ClipEntity
 
 /// Resolves clips by id, by free text (Shortcuts' search field) and suggests recent ones.
 /// Store work hops to the main actor (`ClipStore` is `@MainActor`).
+/// Every query throws `ClipIntentError.locked` while App Lock has ClipSync locked.
 public struct ClipEntityQuery: EntityStringQuery {
     public init() {}
 
     public func entities(for identifiers: [UUID]) async throws -> [ClipEntity] {
-        return await MainActor.run {
-            ClipIntentRunner.entities(for: identifiers, store: ClipStore.shared)
+        return try await MainActor.run {
+            try ClipIntentRunner.requireUnlocked()
+            return ClipIntentRunner.entities(for: identifiers, store: ClipStore.shared)
         }
     }
 
     public func entities(matching string: String) async throws -> [ClipEntity] {
-        return await MainActor.run {
-            ClipIntentRunner.search(string, limit: 50, store: ClipStore.shared).entities
+        return try await MainActor.run {
+            try ClipIntentRunner.requireUnlocked()
+            return ClipIntentRunner.search(string, limit: 50, store: ClipStore.shared).entities
         }
     }
 
     public func suggestedEntities() async throws -> [ClipEntity] {
-        return await MainActor.run {
-            ClipIntentRunner.suggestedEntities(store: ClipStore.shared, limit: 20)
+        return try await MainActor.run {
+            try ClipIntentRunner.requireUnlocked()
+            return ClipIntentRunner.suggestedEntities(store: ClipStore.shared, limit: 20)
         }
     }
 }

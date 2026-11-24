@@ -373,6 +373,56 @@ final class ClipSyncIOSUITests: XCTestCase {
         snap("after-launch-measure")
     }
 
+    /// Security pass: Settings shows the Security section with the App Lock switch (OFF in
+    /// -uitest-seed mode) and the link-preview switch (OFF by default). The lock itself is
+    /// never turned on here: the system Face ID / passcode UI cannot be driven reliably.
+    @MainActor
+    func test12_SecuritySettings() throws {
+        let app = launchSeededApp()
+        XCTAssertTrue(rowContaining(app, "Meeting notes").waitForExistence(timeout: 30), "History did not load")
+        XCTAssertFalse(element(app, id: "lock.unlockButton").exists, "a lock screen is shown in -uitest-seed mode")
+
+        openTab(app, title: "Settings", id: "tab.settings")
+        XCTAssertNotNil(firstExisting([element(app, id: "settings.retention"), labelContains(app, "Keep history")], timeout: 10),
+                        "Settings did not open")
+
+        let lockCandidates = [app.switches["settings.appLock"], element(app, id: "settings.appLock")]
+        guard let lockToggle = firstExisting(lockCandidates, timeout: 3) ?? scrollToFind(app, candidates: lockCandidates) else {
+            snap("security-applock-missing")
+            XCTFail("Settings has no App Lock switch (settings.appLock)")
+            return
+        }
+        XCTAssertNotNil(firstExisting([labelContains(app, "Security"), element(app, id: "settings.securityNote")], timeout: 5),
+                        "Settings has no Security section")
+        snap("security-settings")
+        let lockValue = switchValue(app, id: "settings.appLock", fallback: lockToggle)
+        XCTAssertTrue(lockValue == "0" || lockValue == "false", "App Lock must be off in -uitest-seed mode (value: \(lockValue))")
+
+        let linkCandidates = [app.switches["settings.linkPreviews"], element(app, id: "settings.linkPreviews")]
+        guard let linkToggle = firstExisting(linkCandidates, timeout: 3) ?? scrollToFind(app, candidates: linkCandidates) else {
+            snap("security-linkpreviews-missing")
+            XCTFail("Settings has no link-preview switch (settings.linkPreviews)")
+            return
+        }
+        let linkValue = switchValue(app, id: "settings.linkPreviews", fallback: linkToggle)
+        XCTAssertTrue(linkValue == "0" || linkValue == "false", "link previews must be off by default (value: \(linkValue))")
+        snap("security-linkpreviews")
+    }
+
+    /// The switch's value ("0"/"1"), preferring the real switch element over a matching cell.
+    @MainActor
+    private func switchValue(_ app: XCUIApplication, id: String, fallback: XCUIElement) -> String {
+        let control = app.switches[id]
+        let target = control.exists ? control : fallback
+        if let text = target.value as? String {
+            return text
+        }
+        if let number = target.value as? NSNumber {
+            return number.stringValue
+        }
+        return "<nil>"
+    }
+
     // MARK: - Launch
 
     static let launchArguments: [String] = ["-uitest-seed", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]

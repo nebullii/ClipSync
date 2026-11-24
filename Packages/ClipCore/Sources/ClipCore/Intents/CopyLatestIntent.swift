@@ -16,6 +16,7 @@ public struct CopyLatestIntent: AppIntent {
 
     @MainActor
     public func perform() async throws -> some IntentResult & ReturnsValue<String> & ProvidesDialog {
+        try ClipIntentRunner.requireUnlocked()   // reading history is refused while locked
         let reply = try ClipIntentRunner.copyLatest(store: ClipStore.shared)
         return .result(value: reply.value, dialog: "\(reply.dialog)")
     }
@@ -40,6 +41,7 @@ public struct CopyClipIntent: AppIntent {
 
     @MainActor
     public func perform() async throws -> some IntentResult & ReturnsValue<String> & ProvidesDialog {
+        try ClipIntentRunner.requireUnlocked()   // reading history is refused while locked
         let reply = try ClipIntentRunner.copyItem(id: clip.id, store: ClipStore.shared)
         return .result(value: reply.value, dialog: "\(reply.dialog)")
     }

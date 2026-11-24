@@ -59,9 +59,11 @@ Running on a real iPhone needs your own Apple ID selected as the team in Xcode.
 
 ## Privacy and security
 
-- History is stored only in your user account's Application Support folder.
+- History is stored only in your user account's Application Support folder, with owner-only permissions. It is encrypted on disk only by FileVault (Mac) / iOS Data Protection; ClipSync adds no encryption of its own.
+- Optional App Lock (Touch ID / Face ID / password or passcode), off by default. Link previews (the only network use) are off by default.
 - iCloud sync is included in the code but is **off**. It only works in a build signed with a paid Apple Developer team; see `docs/ICLOUD_SETUP.md` if you want it.
-- The test hooks (`CLIPSYNC_UITEST`, `CLIPSYNC_E2E_DIR`) do nothing unless you set those environment variables yourself.
+- The Mac test hooks (`CLIPSYNC_E2E_DIR`, `CLIPSYNC_STATUS_FILE`) are compiled only into Debug builds and work only together with `CLIPSYNC_UITEST=1`. `run-mac` therefore always runs the E2E test against the Debug build, even when `signing.local` is set.
+- Details, threat model and every default: `docs/SECURITY.md`.
 
 ## Project layout
 

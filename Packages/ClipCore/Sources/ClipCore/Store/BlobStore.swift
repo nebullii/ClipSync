@@ -24,8 +24,16 @@ public struct BlobStore: Sendable, Equatable {
         if fileManager.fileExists(atPath: url.path) {
             return name
         }
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        try data.write(to: url, options: [.atomic])
+        if !fileManager.fileExists(atPath: directory.path) {
+            try fileManager.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true,
+                attributes: StoreFileProtection.directoryAttributes
+            )
+        }
+        try data.write(to: url, options: StoreFileProtection.writeOptions)
+        // Owner-only (0600); best effort, never fails the write.
+        StoreFileProtection.protectFile(url)
         return name
     }
 

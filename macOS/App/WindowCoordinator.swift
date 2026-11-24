@@ -3,7 +3,7 @@ import SwiftUI
 import ClipCore
 
 enum SettingsTab: String, CaseIterable, Identifiable, Hashable {
-    case general, history, privacy, sync, about
+    case general, history, privacy, security, sync, about
     var id: String { rawValue }
 }
 
@@ -60,6 +60,7 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
                 .environmentObject(controller.settings)
                 .environmentObject(controller.accessibility)
                 .environmentObject(controller.launchAtLogin)
+                .environmentObject(controller.appLock)
             window = makeWindow(rootView: root, title: "ClipSync Settings", autosaveName: "ClipSyncSettingsWindow")
             settingsWindow = window
         }
@@ -125,6 +126,8 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
             // Balanced by endLiveUpdates() in windowWillClose.
             controller.accessibility.beginLiveUpdates()
         }
+        // "Hide ClipSync from screen recording and screen sharing".
+        controller.applyWindowPrivacy(to: window)
         // An agent app must activate itself before its window can become key.
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)

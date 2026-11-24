@@ -47,7 +47,13 @@ public final class ClipStore: ObservableObject {
         let blobs = BlobStore(directory: location.blobsDirectory)
         var errors: [String] = []
 
-        if cloudSync {
+        // Never hand CloudKit to an unentitled process (it would crash): see CloudBuildSupport.
+        let cloudKitAllowed = CloudBuildSupport.isCloudKitAvailable
+        if cloudSync && !cloudKitAllowed {
+            errors.append("iCloud sync is on, but this build of ClipSync is not signed for iCloud, so history stays on this device.")
+        }
+
+        if cloudSync && cloudKitAllowed {
             do {
                 let config = ModelConfiguration(
                     "ClipSync",
@@ -56,6 +62,7 @@ public final class ClipStore: ObservableObject {
                     cloudKitDatabase: .private(ClipConstants.iCloudContainerID)
                 )
                 let container = try ModelContainer(for: schema, configurations: config)
+                StoreFileProtection.protectTree(at: location.directory)
                 return ClipStore(
                     container: container,
                     blobStore: blobs,
@@ -77,6 +84,8 @@ public final class ClipStore: ObservableObject {
                 cloudKitDatabase: .none
             )
             let container = try ModelContainer(for: schema, configurations: config)
+            // The database files may have just been created with default permissions.
+            StoreFileProtection.protectTree(at: location.directory)
             return ClipStore(
                 container: container,
                 blobStore: blobs,
@@ -148,6 +157,9 @@ public final class ClipStore: ObservableObject {
     public var media: MediaServices = .noop
     /// Stamped on new items. Set by platform code (Host / UIDevice name).
     public var deviceName: String?
+    /// How many times `enrich(_:)` called `media.linkMetadata` (the app's only network
+    /// use). Stays 0 while `settings.linkPreviewsEnabled` is off. Diagnostics / tests.
+    public private(set) var linkFetchAttempts = 0
 
     /// The main-actor context all store operations use.
     public var context: ModelContext {
@@ -487,6 +499,9 @@ public final class ClipStore: ObservableObject {
         let all = fetch(FetchDescriptor<ClipItem>())
         let victims = keepPinned ? all.filter { !$0.isProtected } : all
         delete(victims)
+        // Belt and braces: also remove every blob file (payloads, thumbnails, link
+        // images) that no remaining representation references.
+        removeUnreferencedBlobs()
         return victims.count
     }
 
@@ -691,6 +706,8 @@ public final class ClipStore: ObservableObject {
 
     /// Runs OCR / thumbnail / link-metadata for an item using `media`.
     /// Safe to call repeatedly; does nothing with the default no-op services.
+    /// Link metadata is fetched only when `settings?.linkPreviewsEnabled == true`
+    /// (OCR and thumbnails are on-device and always run).
     public func enrich(_ item: ClipItem) async {
         let services = media
         switch item.kind {
@@ -721,9 +738,13 @@ public final class ClipStore: ObservableObject {
                 setInternalRepresentation(png, uti: ClipUTI.thumbnail, for: item)
             }
         case .link:
+            // Network gate: link previews contact the linked website, so they run only
+            // when the user turned them on (default off; no settings = off).
+            guard settings?.linkPreviewsEnabled == true else { return }
             guard item.representation(forUTI: ClipUTI.linkIcon) == nil else { return }
             let urlString = (item.plainText ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             guard let url = URL(string: urlString) else { return }
+            linkFetchAttempts &+= 1
             let metadata = await services.linkMetadata.fetchMetadata(for: url)
             guard ClipStore.isAlive(item), let meta = metadata else { return }
             if let newTitle = meta.title, !newTitle.isEmpty,

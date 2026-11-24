@@ -26,7 +26,8 @@ struct ClipSyncMacApp: App {
                 controller: controller,
                 store: controller.store,
                 settings: controller.settings,
-                accessibility: controller.accessibility
+                accessibility: controller.accessibility,
+                appLock: controller.appLock
             )
         } label: {
             MenuBarLabel(settings: controller.settings)
@@ -52,5 +53,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return false
+    }
+
+    /// "Clear history when I quit ClipSync" (off by default).
+    func applicationWillTerminate(_ notification: Notification) {
+        AppController.shared.prepareForTermination()
     }
 }

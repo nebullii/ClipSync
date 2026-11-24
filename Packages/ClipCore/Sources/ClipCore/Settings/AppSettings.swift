@@ -18,10 +18,19 @@ public final class AppSettings: ObservableObject {
         public static let launchAtLogin = "clipsync.launchAtLogin"
         public static let maxHistoryCount = "clipsync.maxHistoryCount"
         public static let hasCompletedOnboarding = "clipsync.hasCompletedOnboarding"
+        // Security & privacy (additive).
+        public static let appLockEnabled = "clipsync.appLockEnabled"
+        public static let lockTimeout = "clipsync.lockTimeout"
+        public static let linkPreviewsEnabled = "clipsync.linkPreviewsEnabled"
+        public static let hideFromScreenCapture = "clipsync.hideFromScreenCapture"
+        public static let privacyCoverEnabled = "clipsync.privacyCoverEnabled"
+        public static let clearHistoryOnQuit = "clipsync.clearHistoryOnQuit"
     }
 
     public static let defaultRetention: RetentionPolicy = .month
     public static let defaultMaxHistoryCount = 10_000
+    /// App Lock auto-lock delay used until the user picks one.
+    public static let defaultLockTimeout: LockTimeout = .after5Minutes
 
     private static var sharedInstance: AppSettings?
 
@@ -69,7 +78,9 @@ public final class AppSettings: ObservableObject {
     public static var allKeys: [String] {
         return [
             Keys.retention, Keys.capturePaused, Keys.cloudSyncEnabled, Keys.ignoreRules,
-            Keys.plainTextByDefault, Keys.launchAtLogin, Keys.maxHistoryCount, Keys.hasCompletedOnboarding
+            Keys.plainTextByDefault, Keys.launchAtLogin, Keys.maxHistoryCount, Keys.hasCompletedOnboarding,
+            Keys.appLockEnabled, Keys.lockTimeout, Keys.linkPreviewsEnabled, Keys.hideFromScreenCapture,
+            Keys.privacyCoverEnabled, Keys.clearHistoryOnQuit
         ]
     }
 
@@ -115,13 +126,56 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(hasCompletedOnboarding, forKey: Keys.hasCompletedOnboarding) }
     }
 
+    // MARK: Security & privacy
+
+    /// App Lock (Touch ID / Face ID / device password). Default OFF.
+    /// Read-only outside ClipCore on purpose: turn it on or off with
+    /// `AppLockController.setEnabled(_:reason:)`, which requires a successful authentication.
+    @Published public internal(set) var appLockEnabled: Bool {
+        didSet { defaults.set(appLockEnabled, forKey: Keys.appLockEnabled) }
+    }
+
+    /// How long after the history was last hidden ClipSync locks again. Default 5 minutes.
+    @Published public var lockTimeout: LockTimeout {
+        didSet { defaults.set(lockTimeout.rawValue, forKey: Keys.lockTimeout) }
+    }
+
+    /// Fetch link titles and icons (contacts the linked website). Default OFF: with it off,
+    /// ClipSync makes no network requests of its own (iCloud sync is a separate opt-in).
+    @Published public var linkPreviewsEnabled: Bool {
+        didSet { defaults.set(linkPreviewsEnabled, forKey: Keys.linkPreviewsEnabled) }
+    }
+
+    /// Mac: ask macOS to leave ClipSync windows out of screen recordings / screen sharing
+    /// (`NSWindow.sharingType = .none`). Default ON. Apps keep it off in UI-test mode.
+    @Published public var hideFromScreenCapture: Bool {
+        didSet { defaults.set(hideFromScreenCapture, forKey: Keys.hideFromScreenCapture) }
+    }
+
+    /// iOS: cover the window while the app is inactive / in the background, so the app
+    /// switcher snapshot never shows clipboard content. Default ON.
+    @Published public var privacyCoverEnabled: Bool {
+        didSet { defaults.set(privacyCoverEnabled, forKey: Keys.privacyCoverEnabled) }
+    }
+
+    /// Mac: delete unpinned history when ClipSync quits normally. Default OFF.
+    @Published public var clearHistoryOnQuit: Bool {
+        didSet { defaults.set(clearHistoryOnQuit, forKey: Keys.clearHistoryOnQuit) }
+    }
+
     /// - Parameter defaults: pass a custom suite in tests; nil = App Group defaults.
     public init(defaults: UserDefaults? = nil) {
         let store = defaults ?? AppGroup.userDefaults()
         self.defaults = store
         self.retention = RetentionPolicy(rawValue: store.string(forKey: Keys.retention) ?? "") ?? AppSettings.defaultRetention
         self.capturePaused = store.bool(forKey: Keys.capturePaused)
-        self.cloudSyncEnabled = store.bool(forKey: Keys.cloudSyncEnabled)
+        if let storedSync = store.object(forKey: Keys.cloudSyncEnabled) as? NSNumber {
+            self.cloudSyncEnabled = storedSync.boolValue
+        } else {
+            // Never chosen: ON only for the real (App Group) defaults of a Signed build that
+            // can use CloudKit (Info.plist ClipSyncCloudDefault). Custom suites stay OFF.
+            self.cloudSyncEnabled = (defaults == nil) && CloudBuildSupport.defaultCloudSyncEnabled
+        }
         self.ignoreRules = AppSettings.loadIgnoreRules(from: store)
         self.plainTextByDefault = store.bool(forKey: Keys.plainTextByDefault)
         self.launchAtLogin = store.bool(forKey: Keys.launchAtLogin)
@@ -131,6 +185,12 @@ public final class AppSettings: ObservableObject {
             self.maxHistoryCount = AppSettings.defaultMaxHistoryCount
         }
         self.hasCompletedOnboarding = store.bool(forKey: Keys.hasCompletedOnboarding)
+        self.appLockEnabled = store.bool(forKey: Keys.appLockEnabled)
+        self.lockTimeout = LockTimeout(rawValue: store.string(forKey: Keys.lockTimeout) ?? "") ?? AppSettings.defaultLockTimeout
+        self.linkPreviewsEnabled = store.bool(forKey: Keys.linkPreviewsEnabled)
+        self.hideFromScreenCapture = AppSettings.bool(forKey: Keys.hideFromScreenCapture, in: store, default: true)
+        self.privacyCoverEnabled = AppSettings.bool(forKey: Keys.privacyCoverEnabled, in: store, default: true)
+        self.clearHistoryOnQuit = store.bool(forKey: Keys.clearHistoryOnQuit)
     }
 
     /// User-added ignored bundle IDs (the preloaded list is in `IgnoreRules.defaultBundleIDs`).
@@ -151,7 +211,8 @@ public final class AppSettings: ObservableObject {
         ignoreRules = rules
     }
 
-    /// Restores every setting to its default value.
+    /// Restores every setting to its default value — except App Lock (`appLockEnabled`,
+    /// `lockTimeout`), which only `AppLockController` changes, after authentication.
     public func resetToDefaults() {
         retention = AppSettings.defaultRetention
         capturePaused = false
@@ -161,9 +222,20 @@ public final class AppSettings: ObservableObject {
         launchAtLogin = false
         maxHistoryCount = AppSettings.defaultMaxHistoryCount
         hasCompletedOnboarding = false
+        linkPreviewsEnabled = false
+        hideFromScreenCapture = true
+        privacyCoverEnabled = true
+        clearHistoryOnQuit = false
     }
 
     // MARK: - Private
+
+    private static func bool(forKey key: String, in defaults: UserDefaults, default fallback: Bool) -> Bool {
+        if let number = defaults.object(forKey: key) as? NSNumber {
+            return number.boolValue
+        }
+        return fallback
+    }
 
     private static func loadIgnoreRules(from defaults: UserDefaults) -> IgnoreRules {
         guard let data = defaults.data(forKey: Keys.ignoreRules) else { return IgnoreRules() }

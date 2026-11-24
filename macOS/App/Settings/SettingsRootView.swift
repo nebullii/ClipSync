@@ -1,9 +1,9 @@
 import SwiftUI
 import ClipCore
 
-/// Settings window content: General, History, Privacy, Sync, About.
+/// Settings window content: General, History, Privacy, Security, Sync, About.
 /// Environment objects (set by `WindowCoordinator`): AppController, ClipStore,
-/// AppSettings, AccessibilityPermission, LaunchAtLoginController.
+/// AppSettings, AccessibilityPermission, LaunchAtLoginController, AppLockController.
 struct SettingsRootView: View {
     @ObservedObject var selection: SettingsSelection
 
@@ -18,6 +18,9 @@ struct SettingsRootView: View {
             PrivacySettingsTab()
                 .tabItem { Label("Privacy", systemImage: "hand.raised") }
                 .tag(SettingsTab.privacy)
+            SecuritySettingsTab()
+                .tabItem { Label("Security", systemImage: "lock.shield") }
+                .tag(SettingsTab.security)
             SyncSettingsTab()
                 .tabItem { Label("Sync", systemImage: "icloud") }
                 .tag(SettingsTab.sync)

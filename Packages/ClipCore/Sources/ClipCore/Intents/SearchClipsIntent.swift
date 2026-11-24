@@ -29,6 +29,7 @@ public struct SearchClipsIntent: AppIntent {
 
     @MainActor
     public func perform() async throws -> some IntentResult & ReturnsValue<[ClipEntity]> & ProvidesDialog {
+        try ClipIntentRunner.requireUnlocked()   // reading history is refused while locked
         let reply = ClipIntentRunner.search(query ?? "", limit: limit, store: ClipStore.shared)
         return .result(value: reply.entities, dialog: "\(reply.dialog)")
     }

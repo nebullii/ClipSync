@@ -55,17 +55,24 @@ final class AppModel: ObservableObject {
     let boards = PinboardDirectory()
     let cloud = CloudStatusMonitor()
     let isUITest: Bool
+    /// App Lock (security pass). Off in `-uitest-seed` mode (wiped settings).
+    let appLock: AppLockController
+    /// Lock screen + app-switcher privacy cover (its own window above everything).
+    let security: SecurityCoordinator
 
     @Published var isOnboardingPresented: Bool
     @Published var pinboardEditor: PinboardEditorMode? = nil
 
     private var cancellables = Set<AnyCancellable>()
 
-    init(store: ClipStore, settings: AppSettings, isUITest: Bool, skipOnboarding: Bool) {
+    init(store: ClipStore, settings: AppSettings, isUITest: Bool, skipOnboarding: Bool, appLock: AppLockController? = nil) {
         self.store = store
         self.settings = settings
         self.isUITest = isUITest
         self.isOnboardingPresented = !skipOnboarding && !settings.hasCompletedOnboarding
+        let lock = appLock ?? AppLockController.shared
+        self.appLock = lock
+        self.security = SecurityCoordinator(appLock: lock, settings: settings, isUITest: isUITest)
 
         // CloudKit imports and other processes writing to the store. The closure only posts
         // a notification, so it needs no actor isolation.
@@ -77,6 +84,7 @@ final class AppModel: ObservableObject {
             .store(in: &cancellables)
 
         boards.refresh(from: store)
+        cloud.account.attach(settings: settings, store: store)
         cloud.refresh()
     }
 
@@ -96,7 +104,11 @@ final class AppModel: ObservableObject {
             store.deviceName = UIDevice.current.name
             ClipStore.setShared(store)
             SampleData.seed(into: store)
-            return AppModel(store: store, settings: settings, isUITest: true, skipOnboarding: true)
+            // App Lock bound to the wiped UI-test settings: always OFF, never prompts.
+            let lock = AppLockController(settings: settings, authenticator: AppLockController.makeSystemAuthenticator())
+            lock.autoPromptOnShow = false
+            AppLockController.setShared(lock)
+            return AppModel(store: store, settings: settings, isUITest: true, skipOnboarding: true, appLock: lock)
         }
 
         let settings = AppSettings.shared
@@ -321,16 +333,48 @@ final class PinboardDirectory: ObservableObject {
     }
 }
 
-/// iCloud account availability (`ubiquityIdentityToken`) plus a per-session banner dismissal.
+/// iOS view of the iCloud account ("login" = the Apple Account signed in to iCloud).
+/// The single source of truth is ClipCore's `CloudAccountMonitor.shared` (CloudKit
+/// `accountStatus()`, gated so unsigned builds never touch CloudKit); this wrapper
+/// re-publishes it and adds the per-session banner dismissal.
 @MainActor
 final class CloudStatusMonitor: ObservableObject {
-    @Published private(set) var isICloudSignedIn = false
+    let account: CloudAccountMonitor
     @Published var isBannerDismissed = false
+    private var cancellables = Set<AnyCancellable>()
 
+    init(account: CloudAccountMonitor? = nil) {
+        let monitor = account ?? CloudAccountMonitor.shared
+        self.account = monitor
+        monitor.objectWillChange
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
+    }
+
+    /// Current account state.
+    var state: CloudAccountState {
+        return account.state
+    }
+
+    /// True when iCloud reports an available account for this app.
+    var isICloudSignedIn: Bool {
+        return account.state == .available
+    }
+
+    /// True once the first check finished (or the build cannot use iCloud at all).
+    var hasChecked: Bool {
+        return account.hasChecked
+    }
+
+    /// Combined readiness for this session.
+    func readiness(store: ClipStore, settings: AppSettings) -> CloudSyncReadiness {
+        return account.readiness(settings: settings, store: store)
+    }
+
+    /// Re-checks the account (fire and forget).
     func refresh() {
-        let signedIn = FileManager.default.ubiquityIdentityToken != nil
-        if signedIn != isICloudSignedIn {
-            isICloudSignedIn = signedIn
-        }
+        account.refreshInBackground()
     }
 }

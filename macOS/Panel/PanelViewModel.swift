@@ -218,6 +218,9 @@ final class PanelViewModel: ObservableObject {
 
     var store: ClipStore { return environment.store }
 
+    /// App Lock: while true the model holds no rows and every item action is refused.
+    var isContentLocked: Bool { return environment.appLock.isLocked }
+
     var items: [ClipItem] { return rows.map { $0.item } }
 
     var selectedItem: ClipItem? {
@@ -284,6 +287,25 @@ final class PanelViewModel: ObservableObject {
         draggingPinboardID = nil
     }
 
+    /// Called by PanelController when ClipSync locks: drops every loaded row, the search
+    /// text and pinboard names, so nothing can be rendered, selected, pasted or dragged.
+    func lockContent() {
+        inlineEditor = nil
+        editorText = ""
+        draggingItemID = nil
+        draggingPinboardID = nil
+        if !searchText.isEmpty { searchText = "" }
+        appliedSearch = ""
+        if !rows.isEmpty { rows = [] }
+        if !pinboardRows.isEmpty { pinboardRows = [] }
+        if scope != .history { scope = .history }
+        if kindFilter != .all { kindFilter = .all }
+        hasMore = false
+        historyIsEmpty = false
+        isDirty = true
+        setSelection(0, scroll: false)
+    }
+
     // MARK: Loading
 
     private func makeFilter(limit: Int, offset: Int) -> ClipFilter {
@@ -310,6 +332,14 @@ final class PanelViewModel: ObservableObject {
     /// Re-fetches from offset 0. With `keepSelection` the already loaded count is kept
     /// (so the scroll position survives) and the selected item is tracked by ID.
     func reload(keepSelection: Bool) {
+        if isContentLocked {
+            // Never fetch while locked (rows are reloaded after unlock).
+            if !rows.isEmpty || !pinboardRows.isEmpty {
+                lockContent()
+            }
+            isDirty = true
+            return
+        }
         refreshPinboards()
         let previousID = keepSelection ? selectedID : nil
         let limit = keepSelection ? max(Self.pageSize, rows.count) : Self.pageSize
@@ -335,7 +365,7 @@ final class PanelViewModel: ObservableObject {
     }
 
     private func loadMore() {
-        guard hasMore, !isLoadingMore else { return }
+        guard hasMore, !isLoadingMore, !isContentLocked else { return }
         isLoadingMore = true
         defer { isLoadingMore = false }
         let page = store.fetchItems(makeFilter(limit: Self.pageSize, offset: rows.count))
@@ -509,7 +539,7 @@ final class PanelViewModel: ObservableObject {
 
     /// The paste service hides the panel, re-activates the previous app and sends ⌘V.
     func paste(_ item: ClipItem, plainText: Bool) {
-        guard Self.isAlive(item) else { return }
+        guard Self.isAlive(item), !isContentLocked else { return }
         environment.paster.paste(item, asPlainText: plainText)
     }
 
@@ -528,7 +558,7 @@ final class PanelViewModel: ObservableObject {
 
     /// ⌘C / "Copy": pasteboard only, then close the panel.
     func copy(_ item: ClipItem) {
-        guard Self.isAlive(item) else { return }
+        guard Self.isAlive(item), !isContentLocked else { return }
         environment.paster.copyToPasteboard(item, asPlainText: environment.settings.plainTextByDefault)
         presenter?.hide()
     }
@@ -542,7 +572,7 @@ final class PanelViewModel: ObservableObject {
     }
 
     func togglePin(_ item: ClipItem) {
-        guard Self.isAlive(item) else { return }
+        guard Self.isAlive(item), !isContentLocked else { return }
         store.togglePin(item)
     }
 
@@ -556,7 +586,7 @@ final class PanelViewModel: ObservableObject {
 
     /// Removes the card locally first so no view renders a deleted model, then deletes.
     func delete(_ item: ClipItem) {
-        guard Self.isAlive(item) else { return }
+        guard Self.isAlive(item), !isContentLocked else { return }
         guard let index = rows.firstIndex(where: { $0.item === item }) else {
             store.delete(item)
             return
@@ -684,7 +714,7 @@ final class PanelViewModel: ObservableObject {
 
     func beginItemDrag(_ item: ClipItem) -> NSItemProvider {
         draggingPinboardID = nil
-        guard Self.isAlive(item) else { return NSItemProvider() }
+        guard Self.isAlive(item), !isContentLocked else { return NSItemProvider() }
         let itemID: UUID = item.id
         draggingItemID = itemID
         return PanelQuickLook.dragProvider(for: item, store: store)

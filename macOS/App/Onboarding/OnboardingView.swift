@@ -205,6 +205,29 @@ private struct FinishStep: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            OnboardingCloudLine(cloud: CloudAccountMonitor.shared)
         }
+    }
+}
+
+/// One non-blocking line with the iCloud account state (details in Settings › Sync).
+private struct OnboardingCloudLine: View {
+    @EnvironmentObject private var controller: AppController
+    @ObservedObject var cloud: CloudAccountMonitor
+
+    var body: some View {
+        let readiness = cloud.readiness(settings: controller.settings, store: controller.store)
+        let title = cloud.hasChecked ? readiness.title : "Checking iCloud…"
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "icloud")
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            Text("iCloud: \(title). You can change sync later in Settings › Sync.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .combine)
     }
 }

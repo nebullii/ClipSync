@@ -158,12 +158,14 @@ private struct OnboardingCapturePage: View {
 
 private struct OnboardingPrivacyPage: View {
     var body: some View {
+        let cloud = CloudAccountMonitor.shared
         OnboardingPage(systemImage: "lock.icloud", title: "Private by design") {
             OnboardingPoint(
                 systemImage: "icloud",
                 title: "Your iCloud, not our servers",
                 detail: "History stays on your devices and in your private iCloud database. Turn on sync in Settings."
             )
+            OnboardingCloudStatusLine(cloud: cloud)
             OnboardingPoint(
                 systemImage: "eye.slash",
                 title: "No tracking",
@@ -175,5 +177,33 @@ private struct OnboardingPrivacyPage: View {
                 detail: "Tap any clip to copy it. Swipe to pin or delete; touch and hold for more."
             )
         }
+    }
+}
+
+/// One non-blocking line with this device's iCloud state ("login" = the Apple Account in iCloud).
+private struct OnboardingCloudStatusLine: View {
+    @ObservedObject var cloud: CloudAccountMonitor
+
+    private var text: String {
+        guard cloud.hasChecked else { return "Checking iCloud…" }
+        switch cloud.state {
+        case .available:
+            return "This device is signed in to iCloud."
+        case .noAccount:
+            return "This device is not signed in to iCloud. ClipSync works locally until you sign in."
+        case .unsupportedBuild:
+            return "This build can't use iCloud yet. ClipSync works on this device."
+        case .restricted, .temporarilyUnavailable, .couldNotDetermine:
+            return "iCloud isn't available right now. ClipSync works on this device."
+        }
+    }
+
+    var body: some View {
+        Text(text)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .padding(.leading, 50)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("onboarding.iCloudStatus")
     }
 }

@@ -1,0 +1,10 @@
+# Copy this file to "signing.local" (same folder) and replace the X's with your
+# 10-character Apple Developer Team ID (Xcode > Settings > Accounts > your team,
+# or developer.apple.com > Account > Membership details).
+#
+# With signing.local present, `scripts/build.sh mac` and `scripts/build.sh ios` build the
+# "Signed" configuration (automatic signing, App Group + iCloud entitlements) instead of the
+# unsigned Debug build. Delete signing.local to go back to unsigned builds.
+#
+# Only the TEAM_ID line is read; it must be exactly 10 capital letters/digits.
+TEAM_ID=XXXXXXXXXX

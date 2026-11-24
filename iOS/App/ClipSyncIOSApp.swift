@@ -23,6 +23,7 @@ struct ClipSyncIOSApp: App {
                 .environmentObject(model.store)
                 .environmentObject(model.settings)
                 .environmentObject(model.boards)
+                .environmentObject(model.appLock)
                 .modelContainer(model.store.container)
         }
     }

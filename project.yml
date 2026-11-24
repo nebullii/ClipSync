@@ -4,9 +4,16 @@
 # Signing
 #   Debug / Release : unsigned-friendly. macOS = ad-hoc ("-"), iOS Simulator = no signing.
 #                     No entitlements are applied, so builds never fail on them.
-#   Signed          : applies the entitlements files (App Group, iCloud/CloudKit, push).
-#                     ONE-LINE SWITCH: put your Apple Team ID in settings.configs.Signed.DEVELOPMENT_TEAM
-#                     below, then build/archive with `-configuration Signed`.
+#                     Info.plist ClipSyncCloudKitEntitled = NO -> the app never touches CloudKit.
+#   Signed          : automatic signing + the entitlements files (App Group
+#                     group.com.thingbits.clipsync, iCloud container iCloud.com.thingbits.clipsync
+#                     with CloudKit, push) for the Mac app, the iOS app and the share extension.
+#                     Info.plist ClipSyncCloudKitEntitled = YES, ClipSyncCloudDefault = YES
+#                     (iCloud sync defaults to ON until the user changes it).
+#                     ONE-SETTING SWITCH: put `TEAM_ID=<your 10-character Team ID>` in
+#                     signing.local at the repo root (see signing.local.example); scripts/build.sh
+#                     mac|ios then builds Signed with DEVELOPMENT_TEAM=<id> -allowProvisioningUpdates.
+#                     (Alternatively set settings.configs.Signed.DEVELOPMENT_TEAM below.)
 
 name: ClipSync
 
@@ -30,9 +37,15 @@ settings:
     SWIFT_STRICT_CONCURRENCY: minimal
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
+    # Read by ClipCore's CloudBuildSupport through the Info.plist keys below.
+    CLIPSYNC_CLOUDKIT_ENTITLED: "NO"
+    CLIPSYNC_CLOUD_DEFAULT: "NO"
   configs:
     Signed:
-      DEVELOPMENT_TEAM: "" # <- ONE-LINE SWITCH: your 10-character Apple Team ID
+      DEVELOPMENT_TEAM: "" # <- or pass DEVELOPMENT_TEAM=<id> (scripts/build.sh does, from signing.local)
+      CODE_SIGN_STYLE: Automatic
+      CLIPSYNC_CLOUDKIT_ENTITLED: "YES"
+      CLIPSYNC_CLOUD_DEFAULT: "YES"
 
 packages:
   ClipCore:
@@ -72,6 +85,8 @@ targets:
         LSApplicationCategoryType: public.app-category.productivity
         LSUIElement: true
         NSHumanReadableCopyright: "Copyright © 2026 Thingbits. All rights reserved."
+        ClipSyncCloudKitEntitled: $(CLIPSYNC_CLOUDKIT_ENTITLED)
+        ClipSyncCloudDefault: $(CLIPSYNC_CLOUD_DEFAULT)
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.thingbits.clipsync.mac
@@ -124,6 +139,9 @@ targets:
         UIRequiresFullScreen: false
         UIBackgroundModes:
           - remote-notification
+        NSFaceIDUsageDescription: "ClipSync uses Face ID to unlock your clipboard history when App Lock is on."
+        ClipSyncCloudKitEntitled: $(CLIPSYNC_CLOUDKIT_ENTITLED)
+        ClipSyncCloudDefault: $(CLIPSYNC_CLOUD_DEFAULT)
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
@@ -177,6 +195,8 @@ targets:
         CFBundlePackageType: $(PRODUCT_BUNDLE_PACKAGE_TYPE)
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        ClipSyncCloudKitEntitled: $(CLIPSYNC_CLOUDKIT_ENTITLED)
+        ClipSyncCloudDefault: $(CLIPSYNC_CLOUD_DEFAULT)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.share-services
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController

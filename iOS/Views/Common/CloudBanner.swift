@@ -1,32 +1,32 @@
 import SwiftUI
+import UIKit
 import ClipCore
 
-/// What the iCloud banner should say. Everything keeps working locally in every state.
+/// What the iCloud banner should say, derived from ClipCore's `CloudSyncReadiness`
+/// (the same value Settings shows). Everything keeps working locally in every state.
 enum CloudBannerState: Equatable {
     case none
-    case storeFallback(String)
-    case signedOut(syncWanted: Bool)
-    case syncOff
-    case syncInactive
+    case readiness(CloudSyncReadiness)
 
     @MainActor
-    static func resolve(store: ClipStore, settings: AppSettings, signedIn: Bool) -> CloudBannerState {
-        if let error = store.storeError, !error.isEmpty {
-            return .storeFallback(error)
-        }
-        if settings.cloudSyncEnabled {
-            if !signedIn {
-                return .signedOut(syncWanted: true)
-            }
-            if !store.isCloudSyncActive {
-                return .syncInactive
-            }
+    static func resolve(store: ClipStore, settings: AppSettings, cloud: CloudStatusMonitor) -> CloudBannerState {
+        // Don't flash "checking" states; wait for the first answer.
+        guard cloud.hasChecked else { return .none }
+        let readiness = cloud.readiness(store: store, settings: settings)
+        if readiness == .syncing {
             return .none
         }
-        if !signedIn {
-            return .signedOut(syncWanted: false)
+        return .readiness(readiness)
+    }
+
+    /// The readiness to show, or nil for no banner.
+    var readiness: CloudSyncReadiness? {
+        switch self {
+        case .none:
+            return nil
+        case .readiness(let value):
+            return value
         }
-        return .syncOff
     }
 }
 
@@ -38,52 +38,35 @@ struct CloudBanner: View {
     @ObservedObject var cloud: CloudStatusMonitor
 
     var body: some View {
-        let state = CloudBannerState.resolve(store: store, settings: settings, signedIn: cloud.isICloudSignedIn)
-        if state != .none && !cloud.isBannerDismissed && !model.isUITest {
-            CloudBannerContent(state: state, onDismiss: { cloud.isBannerDismissed = true })
+        let state = CloudBannerState.resolve(store: store, settings: settings, cloud: cloud)
+        if let readiness = state.readiness, !cloud.isBannerDismissed, !model.isUITest {
+            CloudBannerContent(readiness: readiness, onDismiss: { cloud.isBannerDismissed = true })
         }
     }
 }
 
 private struct CloudBannerContent: View {
-    let state: CloudBannerState
+    let readiness: CloudSyncReadiness
     let onDismiss: () -> Void
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var settings: AppSettings
 
     private var icon: String {
-        switch state {
-        case .storeFallback: return "exclamationmark.icloud"
+        switch readiness {
+        case .syncing: return "icloud"
+        case .readyButOff: return "icloud"
+        case .needsRelaunch: return "arrow.clockwise.icloud"
         case .signedOut: return "icloud.slash"
-        case .syncOff: return "icloud"
-        case .syncInactive: return "arrow.clockwise.icloud"
-        case .none: return "icloud"
-        }
-    }
-
-    private var title: String {
-        switch state {
-        case .storeFallback: return "Using local storage"
-        case .signedOut(let wanted): return wanted ? "Sign in to iCloud to sync" : "iCloud is off"
-        case .syncOff: return "iCloud sync is off"
-        case .syncInactive: return "Sync starts after a relaunch"
-        case .none: return ""
+        case .unsupportedBuild: return "icloud.slash"
+        case .error: return "exclamationmark.icloud"
         }
     }
 
     private var message: String {
-        switch state {
-        case .storeFallback(let detail):
-            return detail
-        case .signedOut:
-            return "Your history stays on this device until you sign in to iCloud in the Settings app."
-        case .syncOff:
-            return "History stays on this device. Turn on sync to see what you copy on your Mac."
-        case .syncInactive:
-            return "Quit and reopen ClipSync. Sync also needs a signed build with iCloud enabled."
-        case .none:
-            return ""
+        if readiness == .needsRelaunch {
+            return "Quit and reopen ClipSync to apply the sync setting. History keeps working on this device."
         }
+        return readiness.explanation
     }
 
     var body: some View {
@@ -93,17 +76,24 @@ private struct CloudBannerContent: View {
                 .foregroundStyle(Theme.accent)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
-                Text(title)
+                Text(readiness.title)
                     .font(.subheadline.weight(.semibold))
                 Text(message)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .lineLimit(4)
                     .fixedSize(horizontal: false, vertical: true)
-                if state == .syncOff {
+                if readiness == .readyButOff {
                     Button("Turn On iCloud Sync") {
                         settings.cloudSyncEnabled = true
                         model.toasts.show("Sync turns on next time ClipSync opens", systemImage: "icloud", style: .info)
+                    }
+                    .font(.footnote.weight(.semibold))
+                    .buttonStyle(.borderless)
+                    .padding(.top, 2)
+                } else if readiness == .signedOut {
+                    Button("Open Settings") {
+                        CloudSettingsLink.openAppSettings()
                     }
                     .font(.footnote.weight(.semibold))
                     .buttonStyle(.borderless)
@@ -126,5 +116,14 @@ private struct CloudBannerContent: View {
         .padding(.top, 6)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("history.cloudBanner")
+    }
+}
+
+/// Opens the Settings app (this app's page; iCloud sign-in is at the top of Settings).
+enum CloudSettingsLink {
+    @MainActor
+    static func openAppSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url, options: [:], completionHandler: nil)
     }
 }

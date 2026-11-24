@@ -7,6 +7,7 @@ struct MenuBarMenu: View {
     @ObservedObject var store: ClipStore
     @ObservedObject var settings: AppSettings
     @ObservedObject var accessibility: AccessibilityPermission
+    @ObservedObject var appLock: AppLockController
 
     private static let recentCount = 5
     private static let titleLength = 48
@@ -31,8 +32,15 @@ struct MenuBarMenu: View {
 
         Divider()
 
-        let recent = store.fetchItems(ClipFilter(limit: MenuBarMenu.recentCount))
-        if recent.isEmpty {
+        // Recent items are never listed (or copyable) while ClipSync is locked.
+        let recent: [ClipItem] = appLock.isLocked ? [] : store.fetchItems(ClipFilter(limit: MenuBarMenu.recentCount))
+        if appLock.isLocked {
+            Text("ClipSync is locked")
+            Button("Unlock ClipSync…") {
+                controller.environment.panel.show()   // the panel's lock screen asks for Touch ID / password
+            }
+            .accessibilityLabel("Unlock ClipSync")
+        } else if recent.isEmpty {
             Text("No clipboard history yet")
         } else {
             Section("Recent (click to copy)") {
@@ -56,6 +64,13 @@ struct MenuBarMenu: View {
             controller.confirmClearHistory()
         }
         .accessibilityLabel("Clear clipboard history")
+
+        if appLock.isEnabled && !appLock.isLocked {
+            Button("Lock ClipSync Now") {
+                controller.lockNow()
+            }
+            .accessibilityLabel("Lock ClipSync now")
+        }
 
         Divider()
 

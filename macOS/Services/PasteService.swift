@@ -30,10 +30,19 @@ final class PasteService: PasteActing {
         return AXIsProcessTrusted()
     }
 
+    /// App Lock: nothing is written while ClipSync is locked (defense in depth; the panel,
+    /// menu bar and test driver already refuse). Checked BEFORE hiding the panel, because
+    /// hiding can lock ("Immediately" timeout).
+    private var isLocked: Bool {
+        return environment?.appLock.isLocked ?? false
+    }
+
     func paste(_ item: ClipItem, asPlainText: Bool) {
+        guard !isLocked else { return }
+        environment?.appLock.noteActivity()
         environment?.panel.hide()
         let target = tracker.pasteTarget
-        copyToPasteboard(item, asPlainText: asPlainText)
+        writeToPasteboard(item, asPlainText: asPlainText)
 
         guard hasAccessibilityPermission else {
             ServicesLog.paste.info("Accessibility not granted: copied only")
@@ -52,6 +61,12 @@ final class PasteService: PasteActing {
     }
 
     func copyToPasteboard(_ item: ClipItem, asPlainText: Bool) {
+        guard !isLocked else { return }
+        environment?.appLock.noteActivity()
+        writeToPasteboard(item, asPlainText: asPlainText)
+    }
+
+    private func writeToPasteboard(_ item: ClipItem, asPlainText: Bool) {
         let changeCount = writer.write(item, asPlainText: asPlainText)
         onOwnWrite(changeCount)
         environment?.store.markUsed(item)

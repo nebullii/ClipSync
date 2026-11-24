@@ -1,5 +1,8 @@
 // End-to-end test driver — owned by the Mac test-automation engineer.
 //
+// COMPILED ONLY INTO DEBUG BUILDS (the whole file is inside `#if DEBUG`): Release and
+// Signed builds contain no file-command channel and no status writer.
+//
 // ACTIVE ONLY when the app is launched with BOTH
 //     CLIPSYNC_UITEST=1  and  CLIPSYNC_E2E_DIR=<absolute path>
 // (see LaunchOptions.e2eDirectory). A normal launch never creates this object, so
@@ -20,6 +23,13 @@
 // methods that the panel's key monitor, mouse actions and menu bar use (and through
 // env.paster), so the product code paths are what is tested. The only shortcut is
 // `seed <n> [tag]`, which ingests drafts straight into ClipStore for the scale test.
+//
+// App Lock (security pass): `lock` turns the lock on WITHOUT authentication (test only) and
+// locks; `unlock-for-test` unlocks without the system prompt and turns the lock off again.
+// While locked, every content command is refused with "locked", and the status files
+// redact item / capture / paste text (only counts and kinds are written).
+
+#if DEBUG
 
 import AppKit
 import ApplicationServices
@@ -42,6 +52,14 @@ final class E2EDriver: NSObject {
     }
 
     static let pollInterval: TimeInterval = 0.2
+    /// Text written instead of clipboard content while ClipSync is locked.
+    static let redacted = "<redacted>"
+    /// Panel commands that reach item content; refused while locked.
+    static let contentCommands: Set<String> = [
+        "search", "select", "select-text", "select-kind", "move-right", "move-left",
+        "paste", "paste-plain", "copy", "pin", "unpin", "delete", "filter",
+        "create-pinboard", "add-to-pinboard", "open-pinboard", "item-files", "open-history"
+    ]
 
     let directory: URL
     private let commandsDirectory: URL
@@ -67,6 +85,11 @@ final class E2EDriver: NSObject {
     private var lastSearchRoundTripMs: Double = -1
     private var lastSeedMs: Double = -1
     private var lastSeedInserted = 0
+    private var axPromptRequested = false
+    /// Tracks visible→hidden transitions so a report can say what hid the panel.
+    private var panelWasVisible = false
+    private var panelHiddenAfterCommand = ""
+    private var panelHiddenAt = ""
 
     // MARK: - Start
 
@@ -191,6 +214,7 @@ final class E2EDriver: NSObject {
         parts.append(String(environment.panel.isVisible))
         parts.append(String(controller.store.revision))
         parts.append(String(controller.settings.capturePaused))
+        parts.append(String(controller.appLock.isLocked))
         if let model = viewModel {
             parts.append(String(model.selectedIndex))
             parts.append(model.searchText)
@@ -283,12 +307,53 @@ final class E2EDriver: NSObject {
                 controller.toggleCapturePaused()
             }
             return Outcome(ok: !controller.settings.capturePaused, message: "capturePaused=\(controller.settings.capturePaused)")
+        case "request-ax-prompt":
+            // Asks macOS (AXIsProcessTrustedWithOptions + prompt) to list ClipSync under
+            // Privacy & Security > Accessibility, so the user has an entry to switch on.
+            // Once per launch; the script sends it at the END of a run, because the
+            // system dialog takes focus and would disturb the paste scenarios.
+            if AXIsProcessTrusted() {
+                return Outcome(ok: true, message: "already trusted")
+            }
+            if axPromptRequested {
+                return Outcome(ok: true, message: "prompt already requested this launch")
+            }
+            axPromptRequested = true
+            controller.accessibility.requestPrompt()
+            return Outcome(ok: true, message: "prompt requested")
+        case "pb-items":
+            // ClipSync's own view of the general pasteboard (diagnostics for file capture).
+            let pbItems = NSPasteboard.general.pasteboardItems ?? []
+            var parts: [String] = ["items=\(pbItems.count)"]
+            for (index, pbItem) in pbItems.enumerated() {
+                let types = pbItem.types.map { $0.rawValue }.joined(separator: ",")
+                let file = pbItem.string(forType: .fileURL) ?? "-"
+                parts.append("item\(index)[\(types)] file=\(file)")
+            }
+            return Outcome(ok: true, message: parts.joined(separator: " "))
+        case "seed-files":
+            return seedFiles(argument)
         case "snapshot":
             return snapshot(argument)
         case "seed":
             return seed(argument)
+        case "lock":
+            // Test only: turn App Lock on without the system prompt, then lock (same
+            // lockNow() as the menu bar's "Lock ClipSync Now").
+            controller.appLock.enableForTesting()
+            controller.lockNow()
+            return Outcome(ok: controller.appLock.isLocked, message: "locked=\(controller.appLock.isLocked)")
+        case "unlock-for-test":
+            // Test only (DEBUG + CLIPSYNC_UITEST): unlock WITHOUT authentication and turn
+            // the lock off again, so the rest of the suite runs unlocked.
+            controller.appLock.unlockAndDisableForTesting()
+            return Outcome(ok: !controller.appLock.isLocked, message: "locked=\(controller.appLock.isLocked) appLockEnabled=\(controller.settings.appLockEnabled)")
         default:
             break
+        }
+
+        if controller.appLock.isLocked && E2EDriver.contentCommands.contains(name) {
+            return Outcome(ok: false, message: "refused: ClipSync is locked (\(name))")
         }
 
         guard let model = viewModel else {
@@ -393,6 +458,14 @@ final class E2EDriver: NSObject {
             }
             model.setScope(.pinboard(board.id))     // pinboard tab
             return Outcome(ok: true, message: "visible=\(model.rows.count)")
+        case "item-files":
+            // store.fileURLs(for:) of the selected item (what PasteboardWriter writes back).
+            guard let item = model.selectedItem, PanelViewModel.isAlive(item) else {
+                return Outcome(ok: false, message: "nothing selected")
+            }
+            let urls = controller.store.fileURLs(for: item)
+            let names = urls.map { $0.lastPathComponent }.joined(separator: ",")
+            return Outcome(ok: true, message: "kind=\(item.kindRaw) count=\(urls.count) names=\(names)")
         case "open-history":
             model.setScope(.history)
             return Outcome(ok: true, message: "visible=\(model.rows.count)")
@@ -426,6 +499,38 @@ final class E2EDriver: NSObject {
                        message: "SEEDED inserted=\(inserted) of \(count) seedMs=\(E2EDriver.format(lastSeedMs))")
     }
 
+    /// `seed-files <abs path> <abs path> ...`: a multi-file item built exactly like
+    /// PasteboardReader.readFiles builds one (test-only, bypasses the pasteboard).
+    private func seedFiles(_ argument: String) -> Outcome {
+        let paths = argument.split(separator: " ").map { String($0) }.filter { $0.hasPrefix("/") }
+        guard paths.count >= 2 else {
+            return Outcome(ok: false, message: "seed-files needs at least two absolute paths")
+        }
+        let urls = paths.map { URL(fileURLWithPath: $0) }
+        let first = urls[0]
+        var draft = ClipDraft(
+            kind: .file,
+            plainText: urls.map { $0.path }.joined(separator: "\n"),
+            title: "\(first.lastPathComponent) + \(urls.count - 1) more",
+            representations: [
+                ClipDraft.Representation(uti: ClipUTI.fileURL, data: Data(first.absoluteString.utf8)),
+                ClipDraft.Representation(uti: ClipUTI.fileURLList, data: ClipFileList.encode(urls))
+            ],
+            declaredTypes: [ClipUTI.fileURL],
+            createdAt: Date()
+        )
+        draft.contentHash = ContentHasher.hash(draft)
+        let result = controller.store.ingestDetailed(draft)
+        switch result {
+        case .inserted:
+            return Outcome(ok: true, message: "SEEDED inserted files=\(urls.count)")
+        case .bumped:
+            return Outcome(ok: true, message: "SEEDED bumped files=\(urls.count)")
+        case .rejected(let reason):
+            return Outcome(ok: false, message: "SEEDED rejected: \(reason.rawValue)")
+        }
+    }
+
     // MARK: - Snapshots
 
     private func snapshot(_ rawName: String) -> Outcome {
@@ -442,7 +547,11 @@ final class E2EDriver: NSObject {
             }
         }
         if written.isEmpty {
-            return Outcome(ok: false, message: "nothing rendered (visible windows: \(openWindowLabels().joined(separator: ",")); failed: \(failed.joined(separator: ",")))")
+            let visible = openWindowLabels().joined(separator: ",")
+            if visible.isEmpty {
+                return Outcome(ok: false, message: "nothing rendered: no ClipSync window is visible (panelVisible=\(environment.panel.isVisible)); send show / open-settings first")
+            }
+            return Outcome(ok: false, message: "nothing rendered (visible windows: \(visible); failed: \(failed.joined(separator: ",")))")
         }
         return Outcome(ok: failed.isEmpty, message: "shots=\(written.joined(separator: " ")) failed=\(failed.joined(separator: ","))")
     }
@@ -490,6 +599,9 @@ final class E2EDriver: NSObject {
         var kv: [(String, String)] = []
         func add(_ key: String, _ value: String) { kv.append((key, value)) }
 
+        let locked = controller.appLock.isLocked
+        func content(_ text: String) -> String { return locked ? E2EDriver.redacted : text }
+
         let info = Bundle.main.infoDictionary ?? [:]
         let version = (info["CFBundleShortVersionString"] as? String ?? "?") + " (" + (info["CFBundleVersion"] as? String ?? "?") + ")"
         let capture = controller.monitor.lastCapture
@@ -502,12 +614,30 @@ final class E2EDriver: NSObject {
         add("capturePaused", String(controller.settings.capturePaused))
         add("accessibilityGranted", String(AXIsProcessTrusted()))
         add("lastCapturedKind", capture?.kind.rawValue ?? "")
-        add("lastCapturedTextPrefix", String((capture?.plainText ?? "").prefix(40)))
+        add("lastCapturedTextPrefix", content(String((capture?.plainText ?? "").prefix(40))))
+        add("locked", String(locked))
+        add("appLockEnabled", String(controller.settings.appLockEnabled))
+        add("lockTimeout", controller.settings.lockTimeout.rawValue)
+        add("itemsRedacted", String(locked))
+        add("linkPreviewsEnabled", String(controller.settings.linkPreviewsEnabled))
+        add("linkFetchAttempts", String(store.linkFetchAttempts))
+        add("hideFromScreenCapture", String(controller.settings.hideFromScreenCapture))
+        add("windowsHiddenFromCapture", String(controller.hidesWindowsFromCapture))
         add("frontmostApp", NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "")
         add("pasteTarget", controller.tracker.pasteTarget?.bundleIdentifier ?? "")
+        add("trackerPreviousApp", controller.tracker.previousApp?.bundleIdentifier ?? "")
+        add("axPromptRequested", String(axPromptRequested))
         add("openWindows", openWindowLabels().joined(separator: ","))
         add("pinboards", store.pinboards().map { $0.name }.joined(separator: ","))
-        add("panelVisible", String(environment.panel.isVisible))
+        let panelVisibleNow = environment.panel.isVisible
+        if panelWasVisible && !panelVisibleNow {
+            panelHiddenAfterCommand = lastCommand
+            panelHiddenAt = formatter.string(from: now)
+        }
+        panelWasVisible = panelVisibleNow
+        add("panelVisible", String(panelVisibleNow))
+        add("panelHiddenAfterCommand", panelHiddenAfterCommand)
+        add("panelHiddenAt", panelHiddenAt)
         add("lastShowDurationMs", E2EDriver.format(panelController?.lastShowDurationMs ?? -1))
         add("lastSearchQuery", lastSearchQuery)
         add("lastSearchRoundTripMs", E2EDriver.format(lastSearchRoundTripMs))
@@ -525,32 +655,32 @@ final class E2EDriver: NSObject {
             add("panelFilter", model.kindFilter.rawValue)
             if let selected = model.selectedItem, PanelViewModel.isAlive(selected) {
                 add("selected.kind", selected.kindRaw)
-                add("selected.text", E2EDriver.prefix(E2EDriver.text(of: selected), 80))
+                add("selected.text", content(E2EDriver.prefix(E2EDriver.text(of: selected), 80)))
             }
             for row in model.rows.prefix(10) where PanelViewModel.isAlive(row.item) {
                 add("rows.\(row.index).kind", row.item.kindRaw)
-                add("rows.\(row.index).text", E2EDriver.prefix(E2EDriver.text(of: row.item), 80))
+                add("rows.\(row.index).text", content(E2EDriver.prefix(E2EDriver.text(of: row.item), 80)))
             }
         }
 
         let newest = store.fetchItems(ClipFilter(limit: 10))
         for (index, item) in newest.enumerated() {
             add("items.\(index).kind", item.kindRaw)
-            add("items.\(index).title", E2EDriver.prefix(item.title ?? "", 80))
-            add("items.\(index).plainText", E2EDriver.prefix(item.plainText ?? "", 80))
+            add("items.\(index).title", content(E2EDriver.prefix(item.title ?? "", 80)))
+            add("items.\(index).plainText", content(E2EDriver.prefix(item.plainText ?? "", 80)))
             add("items.\(index).isPinned", String(item.isPinned))
             add("items.\(index).inPinboard", String(item.isInPinboard))
             add("items.\(index).sourceApp", item.sourceAppName ?? item.sourceAppBundleID ?? "")
         }
 
         if let paste = lastPaste {
-            add("lastPaste.text", paste.textPrefix)
+            add("lastPaste.text", content(paste.textPrefix))
             add("lastPaste.asPlainText", String(paste.asPlainText))
             add("lastPaste.mode", paste.mode)
             add("lastPaste.timestamp", formatter.string(from: paste.timestamp))
         }
         if let copy = lastCopy {
-            add("lastCopy.text", copy.textPrefix)
+            add("lastCopy.text", content(copy.textPrefix))
             add("lastCopy.asPlainText", String(copy.asPlainText))
             add("lastCopy.timestamp", formatter.string(from: copy.timestamp))
         }
@@ -572,8 +702,8 @@ final class E2EDriver: NSObject {
         for item in newest {
             itemObjects.append([
                 "kind": item.kindRaw,
-                "title": E2EDriver.prefix(item.title ?? "", 80),
-                "plainText": E2EDriver.prefix(item.plainText ?? "", 80),
+                "title": content(E2EDriver.prefix(item.title ?? "", 80)),
+                "plainText": content(E2EDriver.prefix(item.plainText ?? "", 80)),
                 "isPinned": item.isPinned,
                 "sourceApp": item.sourceAppName ?? item.sourceAppBundleID ?? ""
             ])
@@ -583,7 +713,7 @@ final class E2EDriver: NSObject {
         json["openWindows"] = openWindowLabels()
         if let paste = lastPaste {
             json["lastPasteAction"] = [
-                "itemText": paste.textPrefix,
+                "itemText": content(paste.textPrefix),
                 "asPlainText": paste.asPlainText,
                 "mode": paste.mode,
                 "timestamp": formatter.string(from: paste.timestamp)
@@ -591,7 +721,7 @@ final class E2EDriver: NSObject {
         }
         if let copy = lastCopy {
             json["lastCopyAction"] = [
-                "itemText": copy.textPrefix,
+                "itemText": content(copy.textPrefix),
                 "asPlainText": copy.asPlainText,
                 "timestamp": formatter.string(from: copy.timestamp)
             ] as [String: Any]
@@ -599,7 +729,7 @@ final class E2EDriver: NSObject {
         if let model = viewModel {
             var rowObjects: [[String: Any]] = []
             for row in model.rows.prefix(10) where PanelViewModel.isAlive(row.item) {
-                rowObjects.append(["kind": row.item.kindRaw, "text": E2EDriver.prefix(E2EDriver.text(of: row.item), 80)])
+                rowObjects.append(["kind": row.item.kindRaw, "text": content(E2EDriver.prefix(E2EDriver.text(of: row.item), 80))])
             }
             json["visibleRows"] = rowObjects
         }
@@ -790,3 +920,5 @@ enum E2ESnapshot {
         return seen.count
     }
 }
+
+#endif // DEBUG

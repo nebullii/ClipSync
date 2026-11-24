@@ -17,6 +17,9 @@ public enum ClipIntentError: Error, Equatable, CustomLocalizedStringResourceConv
     case noItems
     case itemNotFound
     case pasteboardWriteFailed
+    /// App Lock is on and ClipSync is locked: reading / copying history is refused
+    /// (saving new items still works).
+    case locked
 
     public var localizedStringResource: LocalizedStringResource {
         switch self {
@@ -43,6 +46,8 @@ public enum ClipIntentError: Error, Equatable, CustomLocalizedStringResourceConv
             return "That clip is no longer in your ClipSync history."
         case .pasteboardWriteFailed:
             return "ClipSync could not write to the clipboard."
+        case .locked:
+            return "ClipSync is locked. Unlock it in the app, then try again."
         }
     }
 }
@@ -70,6 +75,21 @@ public enum ClipIntentRunner {
         public let entities: [ClipEntity]
         public let texts: [String]
         public let dialog: String
+    }
+
+    // MARK: App Lock
+
+    /// Throws `.locked` when App Lock is on and the timeout has passed (or ClipSync was
+    /// locked). Called by every intent / entity query that READS history. Saving intents
+    /// do not call it: saving new items is allowed while locked (write-only).
+    public static func requireUnlocked() throws {
+        try requireUnlocked(lock: AppLockController.shared)
+    }
+
+    public static func requireUnlocked(lock: AppLockController) throws {
+        if lock.checkTimeout() {
+            throw ClipIntentError.locked
+        }
     }
 
     // MARK: Save
