@@ -1,0 +1,265 @@
+# ClipSync — XcodeGen spec. Generate with:  scripts/bootstrap.sh  (or `xcodegen generate`)
+# ClipSync.xcodeproj is generated; never edit it by hand, edit this file.
+#
+# Signing
+#   Debug / Release : unsigned-friendly. macOS = ad-hoc ("-"), iOS Simulator = no signing.
+#                     No entitlements are applied, so builds never fail on them.
+#   Signed          : applies the entitlements files (App Group, iCloud/CloudKit, push).
+#                     ONE-LINE SWITCH: put your Apple Team ID in settings.configs.Signed.DEVELOPMENT_TEAM
+#                     below, then build/archive with `-configuration Signed`.
+
+name: ClipSync
+
+options:
+  bundleIdPrefix: com.thingbits.clipsync
+  deploymentTarget:
+    macOS: "14.0"
+    iOS: "17.0"
+  createIntermediateGroups: true
+  defaultConfig: Debug
+  xcodeVersion: "16.0"
+
+configs:
+  Debug: debug
+  Release: release
+  Signed: release
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+  configs:
+    Signed:
+      DEVELOPMENT_TEAM: "" # <- ONE-LINE SWITCH: your 10-character Apple Team ID
+
+packages:
+  ClipCore:
+    path: Packages/ClipCore
+  KeyboardShortcuts:
+    url: https://github.com/sindresorhus/KeyboardShortcuts
+    from: 2.0.0
+
+targets:
+
+  ClipSyncMac:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: macOS
+        excludes:
+          - "*.entitlements"
+          - "**/*.entitlements"
+    dependencies:
+      - package: ClipCore
+        product: ClipCore
+      - package: KeyboardShortcuts
+    info:
+      path: SupportingFiles/ClipSyncMac/Info.plist
+      properties:
+        CFBundleDevelopmentRegion: $(DEVELOPMENT_LANGUAGE)
+        CFBundleExecutable: $(EXECUTABLE_NAME)
+        CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
+        CFBundleInfoDictionaryVersion: "6.0"
+        CFBundleName: $(PRODUCT_NAME)
+        CFBundleDisplayName: ClipSync
+        CFBundlePackageType: $(PRODUCT_BUNDLE_PACKAGE_TYPE)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
+        LSApplicationCategoryType: public.app-category.productivity
+        LSUIElement: true
+        NSHumanReadableCopyright: "Copyright © 2026 Thingbits. All rights reserved."
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.thingbits.clipsync.mac
+        PRODUCT_NAME: ClipSync
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        ENABLE_HARDENED_RUNTIME: "NO"
+        ENABLE_APP_SANDBOX: "NO"
+        COMBINE_HIDPI_IMAGES: "YES"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
+      configs:
+        Signed:
+          CODE_SIGN_STYLE: Automatic
+          CODE_SIGN_IDENTITY: "Apple Development"
+          CODE_SIGN_ENTITLEMENTS: macOS/ClipSyncMac.entitlements
+          ENABLE_HARDENED_RUNTIME: "YES"
+
+  ClipSyncIOS:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: iOS
+        excludes:
+          - "*.entitlements"
+          - "**/*.entitlements"
+    dependencies:
+      - package: ClipCore
+        product: ClipCore
+      - target: ClipSyncShare
+    info:
+      path: SupportingFiles/ClipSyncIOS/Info.plist
+      properties:
+        CFBundleDevelopmentRegion: $(DEVELOPMENT_LANGUAGE)
+        CFBundleExecutable: $(EXECUTABLE_NAME)
+        CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
+        CFBundleInfoDictionaryVersion: "6.0"
+        CFBundleName: $(PRODUCT_NAME)
+        CFBundleDisplayName: ClipSync
+        CFBundlePackageType: $(PRODUCT_BUNDLE_PACKAGE_TYPE)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSRequiresIPhoneOS: true
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
+        UIApplicationSupportsIndirectInputEvents: true
+        UIRequiresFullScreen: false
+        UIBackgroundModes:
+          - remote-notification
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.thingbits.clipsync.ios
+        PRODUCT_NAME: ClipSync
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: "NO"
+        CODE_SIGN_STYLE: Manual
+        "CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]": "NO"
+        "CODE_SIGNING_REQUIRED[sdk=iphonesimulator*]": "NO"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
+      configs:
+        Signed:
+          CODE_SIGN_STYLE: Automatic
+          CODE_SIGN_IDENTITY: "Apple Development"
+          CODE_SIGN_ENTITLEMENTS: iOS/ClipSyncIOS.entitlements
+          "CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]": "YES"
+          "CODE_SIGNING_REQUIRED[sdk=iphonesimulator*]": "YES"
+
+  ClipSyncShare:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: ShareExtension
+        excludes:
+          - "*.entitlements"
+          - "**/*.entitlements"
+    dependencies:
+      - package: ClipCore
+        product: ClipCore
+    info:
+      path: SupportingFiles/ClipSyncShare/Info.plist
+      properties:
+        CFBundleDevelopmentRegion: $(DEVELOPMENT_LANGUAGE)
+        CFBundleExecutable: $(EXECUTABLE_NAME)
+        CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
+        CFBundleInfoDictionaryVersion: "6.0"
+        CFBundleName: $(PRODUCT_NAME)
+        CFBundleDisplayName: Save to ClipSync
+        CFBundlePackageType: $(PRODUCT_BUNDLE_PACKAGE_TYPE)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsText: true
+              NSExtensionActivationSupportsWebURLWithMaxCount: 1
+              NSExtensionActivationSupportsWebPageWithMaxCount: 1
+              NSExtensionActivationSupportsImageWithMaxCount: 10
+              NSExtensionActivationSupportsFileWithMaxCount: 10
+              NSExtensionActivationSupportsAttachmentsWithMaxCount: 10
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.thingbits.clipsync.ios.share
+        PRODUCT_NAME: ClipSyncShare
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Manual
+        "CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]": "NO"
+        "CODE_SIGNING_REQUIRED[sdk=iphonesimulator*]": "NO"
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"
+      configs:
+        Signed:
+          CODE_SIGN_STYLE: Automatic
+          CODE_SIGN_IDENTITY: "Apple Development"
+          CODE_SIGN_ENTITLEMENTS: ShareExtension/ClipSyncShare.entitlements
+          "CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]": "YES"
+          "CODE_SIGNING_REQUIRED[sdk=iphonesimulator*]": "YES"
+
+  ClipSyncIOSUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: iOSUITests
+    dependencies:
+      - target: ClipSyncIOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.thingbits.clipsync.ios.uitests
+        PRODUCT_NAME: ClipSyncIOSUITests
+        TEST_TARGET_NAME: ClipSyncIOS
+        GENERATE_INFOPLIST_FILE: "YES"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Manual
+        "CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]": "NO"
+        "CODE_SIGNING_REQUIRED[sdk=iphonesimulator*]": "NO"
+      configs:
+        Signed:
+          CODE_SIGN_STYLE: Automatic
+          CODE_SIGN_IDENTITY: "Apple Development"
+          "CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]": "YES"
+          "CODE_SIGNING_REQUIRED[sdk=iphonesimulator*]": "YES"
+
+schemes:
+  ClipSyncMac:
+    build:
+      targets:
+        ClipSyncMac: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Signed
+
+  ClipSyncIOS:
+    build:
+      targets:
+        ClipSyncIOS: all
+        ClipSyncShare: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - ClipSyncIOSUITests
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Signed
