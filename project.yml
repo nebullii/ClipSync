@@ -52,7 +52,7 @@ packages:
     path: Packages/ClipCore
   KeyboardShortcuts:
     url: https://github.com/sindresorhus/KeyboardShortcuts
-    from: 2.0.0
+    exactVersion: 2.4.0
 
 targets:
 
@@ -84,7 +84,7 @@ targets:
         LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
         LSApplicationCategoryType: public.app-category.productivity
         LSUIElement: true
-        NSHumanReadableCopyright: "Copyright © 2026 Thingbits. All rights reserved."
+        NSHumanReadableCopyright: "Copyright © 2026 Thingbits. MIT License."
         ClipSyncCloudKitEntitled: $(CLIPSYNC_CLOUDKIT_ENTITLED)
         ClipSyncCloudDefault: $(CLIPSYNC_CLOUD_DEFAULT)
     settings:

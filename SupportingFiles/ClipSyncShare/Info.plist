@@ -20,6 +20,10 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>ClipSyncCloudDefault</key>
+	<string>$(CLIPSYNC_CLOUD_DEFAULT)</string>
+	<key>ClipSyncCloudKitEntitled</key>
+	<string>$(CLIPSYNC_CLOUDKIT_ENTITLED)</string>
 	<key>NSExtension</key>
 	<dict>
 		<key>NSExtensionAttributes</key>

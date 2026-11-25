@@ -20,6 +20,10 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>ClipSyncCloudDefault</key>
+	<string>$(CLIPSYNC_CLOUD_DEFAULT)</string>
+	<key>ClipSyncCloudKitEntitled</key>
+	<string>$(CLIPSYNC_CLOUDKIT_ENTITLED)</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
 	<key>LSMinimumSystemVersion</key>
@@ -27,6 +31,6 @@
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>
-	<string>Copyright © 2026 Thingbits. All rights reserved.</string>
+	<string>Copyright © 2026 Thingbits. MIT License.</string>
 </dict>
 </plist>
