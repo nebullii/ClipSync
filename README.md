@@ -105,3 +105,7 @@ project.yml         XcodeGen project definition
 ## Status
 
 This is an early build. Known gaps: no auto-update, no notarized download, iCloud sync untested on real devices.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
