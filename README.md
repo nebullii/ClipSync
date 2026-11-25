@@ -20,6 +20,25 @@ Everything stays on your device. There are no accounts, no servers and no analyt
 - History list or grid, search, filters, pinboards, swipe to pin or delete, tap to copy.
 - A "Save clipboard" button, a Share Extension and Shortcuts actions. iOS does not let apps watch the clipboard in the background, so items are saved when you ask.
 
+## Install without Xcode
+
+A ready-built Mac app is in this repository: [`dist/ClipSync-mac.zip`](dist/ClipSync-mac.zip).
+
+1. Download `ClipSync-mac.zip`, unzip it, and drag **ClipSync** into your Applications folder.
+2. Open it. macOS blocks it the first time because it is not signed by a registered developer: go to **System Settings > Privacy & Security** and click **Open Anyway**.
+3. Allow **Accessibility** when asked, then press **Shift + Command + V**.
+
+Requires a Mac with Apple Silicon (M1 or newer) and macOS 14 or later. No Xcode, Homebrew or Apple Developer account is needed. From Terminal the same thing is:
+
+```sh
+curl -L -o ClipSync-mac.zip https://github.com/nebullii/ClipSync/raw/main/dist/ClipSync-mac.zip
+unzip ClipSync-mac.zip -d /Applications
+xattr -dr com.apple.quarantine /Applications/ClipSync.app
+open /Applications/ClipSync.app
+```
+
+The zip is the Release build produced by `./scripts/build.sh install-mac` from this source. It is ad-hoc signed and not notarized.
+
 ## Build it on your Mac
 
 You need a Mac with **Xcode 16 or later** and [Homebrew](https://brew.sh).
