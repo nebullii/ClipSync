@@ -90,6 +90,10 @@ final class AppLockTests: XCTestCase {
         settings.playCopySound = false
         settings.resetToDefaults()
         XCTAssertTrue(settings.playCopySound, "reset turns the copy sound back on")
+        XCTAssertEqual(settings.copySoundName, "Tink")
+        settings.copySoundName = "Glass"
+        settings.resetToDefaults()
+        XCTAssertEqual(settings.copySoundName, "Tink")
         XCTAssertTrue(AppSettings.allKeys.contains(AppSettings.Keys.playCopySound))
         XCTAssertTrue(AppSettings.allKeys.contains(AppSettings.Keys.appLockEnabled))
         XCTAssertTrue(AppSettings.allKeys.contains(AppSettings.Keys.linkPreviewsEnabled))

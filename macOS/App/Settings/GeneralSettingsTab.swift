@@ -36,6 +36,17 @@ struct GeneralSettingsTab: View {
             Section("Copying") {
                 Toggle("Play a sound when something is copied", isOn: $settings.playCopySound)
                     .accessibilityLabel("Play a sound when something is copied")
+                Picker("Sound:", selection: $settings.copySoundName) {
+                    ForEach(CopySound.availableNames, id: \.self) { name in
+                        Text(name).tag(name)
+                    }
+                }
+                .disabled(!settings.playCopySound)
+                .onChange(of: settings.copySoundName) { _, name in
+                    CopySound.play(named: name)
+                }
+                .accessibilityLabel("Copy sound")
+                .accessibilityHint("Choosing a sound plays it")
                 SettingsFootnote("Plays a short sound each time ClipSync saves something you copy. Nothing plays while capture is paused or for apps ClipSync ignores.")
             }
 

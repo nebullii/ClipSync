@@ -26,10 +26,13 @@ public final class AppSettings: ObservableObject {
         public static let privacyCoverEnabled = "clipsync.privacyCoverEnabled"
         public static let clearHistoryOnQuit = "clipsync.clearHistoryOnQuit"
         public static let playCopySound = "clipsync.playCopySound"
+        public static let copySoundName = "clipsync.copySoundName"
     }
 
     public static let defaultRetention: RetentionPolicy = .month
     public static let defaultMaxHistoryCount = 10_000
+    /// macOS system sound (in /System/Library/Sounds) played on copy until the user picks one.
+    public static let defaultCopySoundName = "Tink"
     /// App Lock auto-lock delay used until the user picks one.
     public static let defaultLockTimeout: LockTimeout = .after5Minutes
 
@@ -81,7 +84,7 @@ public final class AppSettings: ObservableObject {
             Keys.retention, Keys.capturePaused, Keys.cloudSyncEnabled, Keys.ignoreRules,
             Keys.plainTextByDefault, Keys.launchAtLogin, Keys.maxHistoryCount, Keys.hasCompletedOnboarding,
             Keys.appLockEnabled, Keys.lockTimeout, Keys.linkPreviewsEnabled, Keys.hideFromScreenCapture,
-            Keys.privacyCoverEnabled, Keys.clearHistoryOnQuit, Keys.playCopySound
+            Keys.privacyCoverEnabled, Keys.clearHistoryOnQuit, Keys.playCopySound, Keys.copySoundName
         ]
     }
 
@@ -169,6 +172,11 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(playCopySound, forKey: Keys.playCopySound) }
     }
 
+    /// Mac: which macOS system sound the copy sound uses (a name like "Tink" or "Pop").
+    @Published public var copySoundName: String {
+        didSet { defaults.set(copySoundName, forKey: Keys.copySoundName) }
+    }
+
     /// - Parameter defaults: pass a custom suite in tests; nil = App Group defaults.
     public init(defaults: UserDefaults? = nil) {
         let store = defaults ?? AppGroup.userDefaults()
@@ -198,6 +206,8 @@ public final class AppSettings: ObservableObject {
         self.privacyCoverEnabled = AppSettings.bool(forKey: Keys.privacyCoverEnabled, in: store, default: true)
         self.clearHistoryOnQuit = store.bool(forKey: Keys.clearHistoryOnQuit)
         self.playCopySound = AppSettings.bool(forKey: Keys.playCopySound, in: store, default: true)
+        let storedSound = store.string(forKey: Keys.copySoundName) ?? ""
+        self.copySoundName = storedSound.isEmpty ? AppSettings.defaultCopySoundName : storedSound
     }
 
     /// User-added ignored bundle IDs (the preloaded list is in `IgnoreRules.defaultBundleIDs`).
@@ -234,6 +244,7 @@ public final class AppSettings: ObservableObject {
         privacyCoverEnabled = true
         clearHistoryOnQuit = false
         playCopySound = true
+        copySoundName = AppSettings.defaultCopySoundName
     }
 
     // MARK: - Private
