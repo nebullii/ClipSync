@@ -33,6 +33,12 @@ struct GeneralSettingsTab: View {
                 }
             }
 
+            Section("Copying") {
+                Toggle("Play a sound when something is copied", isOn: $settings.playCopySound)
+                    .accessibilityLabel("Play a sound when something is copied")
+                SettingsFootnote("Plays a short sound each time ClipSync saves something you copy. Nothing plays while capture is paused or for apps ClipSync ignores.")
+            }
+
             Section("Pasting") {
                 Toggle("Paste as plain text by default", isOn: $settings.plainTextByDefault)
                     .accessibilityLabel("Paste as plain text by default")

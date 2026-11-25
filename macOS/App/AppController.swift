@@ -74,6 +74,22 @@ final class AppController: NSObject, ObservableObject {
         appLock.autoPromptOnShow = !options.isUITest
     }
 
+    // MARK: - Copy sound
+
+    /// macOS system sound played when a copy is saved. Loaded once.
+    private lazy var copySound: NSSound? = {
+        let sound = NSSound(named: NSSound.Name("Pop"))
+        sound?.volume = 0.6
+        return sound
+    }()
+
+    /// Plays the copy sound after a capture, unless it is turned off or this is a UI-test run.
+    private func playCopySoundIfEnabled() {
+        guard settings.playCopySound, !options.isUITest, let sound = copySound else { return }
+        if sound.isPlaying { sound.stop() }
+        sound.play()
+    }
+
     // MARK: - Launch
 
     func start() {
@@ -98,6 +114,7 @@ final class AppController: NSObject, ObservableObject {
         maintenance.start()
 
         monitor.onCapture = { [weak self] _ in
+            self?.playCopySoundIfEnabled()
             self?.writeStatus()
         }
         monitor.start()

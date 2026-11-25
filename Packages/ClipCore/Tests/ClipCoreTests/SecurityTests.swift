@@ -86,6 +86,11 @@ final class AppLockTests: XCTestCase {
         XCTAssertTrue(settings.hideFromScreenCapture)
         XCTAssertTrue(settings.privacyCoverEnabled)
         XCTAssertFalse(settings.clearHistoryOnQuit)
+        XCTAssertTrue(settings.playCopySound)
+        settings.playCopySound = false
+        settings.resetToDefaults()
+        XCTAssertTrue(settings.playCopySound, "reset turns the copy sound back on")
+        XCTAssertTrue(AppSettings.allKeys.contains(AppSettings.Keys.playCopySound))
         XCTAssertTrue(AppSettings.allKeys.contains(AppSettings.Keys.appLockEnabled))
         XCTAssertTrue(AppSettings.allKeys.contains(AppSettings.Keys.linkPreviewsEnabled))
     }

@@ -25,6 +25,7 @@ public final class AppSettings: ObservableObject {
         public static let hideFromScreenCapture = "clipsync.hideFromScreenCapture"
         public static let privacyCoverEnabled = "clipsync.privacyCoverEnabled"
         public static let clearHistoryOnQuit = "clipsync.clearHistoryOnQuit"
+        public static let playCopySound = "clipsync.playCopySound"
     }
 
     public static let defaultRetention: RetentionPolicy = .month
@@ -80,7 +81,7 @@ public final class AppSettings: ObservableObject {
             Keys.retention, Keys.capturePaused, Keys.cloudSyncEnabled, Keys.ignoreRules,
             Keys.plainTextByDefault, Keys.launchAtLogin, Keys.maxHistoryCount, Keys.hasCompletedOnboarding,
             Keys.appLockEnabled, Keys.lockTimeout, Keys.linkPreviewsEnabled, Keys.hideFromScreenCapture,
-            Keys.privacyCoverEnabled, Keys.clearHistoryOnQuit
+            Keys.privacyCoverEnabled, Keys.clearHistoryOnQuit, Keys.playCopySound
         ]
     }
 
@@ -163,6 +164,11 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(clearHistoryOnQuit, forKey: Keys.clearHistoryOnQuit) }
     }
 
+    /// Mac: play a short sound each time ClipSync saves something you copied. Default ON.
+    @Published public var playCopySound: Bool {
+        didSet { defaults.set(playCopySound, forKey: Keys.playCopySound) }
+    }
+
     /// - Parameter defaults: pass a custom suite in tests; nil = App Group defaults.
     public init(defaults: UserDefaults? = nil) {
         let store = defaults ?? AppGroup.userDefaults()
@@ -191,6 +197,7 @@ public final class AppSettings: ObservableObject {
         self.hideFromScreenCapture = AppSettings.bool(forKey: Keys.hideFromScreenCapture, in: store, default: true)
         self.privacyCoverEnabled = AppSettings.bool(forKey: Keys.privacyCoverEnabled, in: store, default: true)
         self.clearHistoryOnQuit = store.bool(forKey: Keys.clearHistoryOnQuit)
+        self.playCopySound = AppSettings.bool(forKey: Keys.playCopySound, in: store, default: true)
     }
 
     /// User-added ignored bundle IDs (the preloaded list is in `IgnoreRules.defaultBundleIDs`).
@@ -226,6 +233,7 @@ public final class AppSettings: ObservableObject {
         hideFromScreenCapture = true
         privacyCoverEnabled = true
         clearHistoryOnQuit = false
+        playCopySound = true
     }
 
     // MARK: - Private
