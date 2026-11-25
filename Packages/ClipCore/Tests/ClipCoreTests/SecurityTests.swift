@@ -94,6 +94,12 @@ final class AppLockTests: XCTestCase {
         settings.copySoundName = "Glass"
         settings.resetToDefaults()
         XCTAssertEqual(settings.copySoundName, "Tink")
+        XCTAssertEqual(settings.copySoundFilePath, "")
+        settings.copySoundName = AppSettings.customCopySoundName
+        settings.copySoundFilePath = "/tmp/copy.m4a"
+        settings.resetToDefaults()
+        XCTAssertEqual(settings.copySoundName, "Tink")
+        XCTAssertEqual(settings.copySoundFilePath, "", "reset forgets the custom sound file")
         XCTAssertTrue(AppSettings.allKeys.contains(AppSettings.Keys.playCopySound))
         XCTAssertTrue(AppSettings.allKeys.contains(AppSettings.Keys.appLockEnabled))
         XCTAssertTrue(AppSettings.allKeys.contains(AppSettings.Keys.linkPreviewsEnabled))

@@ -79,7 +79,7 @@ final class AppController: NSObject, ObservableObject {
     /// Plays the chosen macOS sound after a capture, unless it is turned off or this is a UI-test run.
     private func playCopySoundIfEnabled() {
         guard settings.playCopySound, !options.isUITest else { return }
-        CopySound.play(named: settings.copySoundName)
+        CopySound.play(named: settings.copySoundName, customFilePath: settings.copySoundFilePath)
     }
 
     // MARK: - Launch
